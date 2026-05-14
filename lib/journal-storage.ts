@@ -235,13 +235,10 @@ export async function exportProfile(profileName: string) {
   const profile = await createProfile({ name: profileName });
   const profilePath = getProfilePath(profile.slug);
 
-  // Save to DocumentDirectory/Downloads for user access
-  const baseDir = FileSystem.documentDirectory ?? "";
-  const downloadsDir = joinPath(baseDir, "Downloads");
-  await ensureDirectory(downloadsDir);
-
+  // Create ZIP in cache directory
+  const cacheDir = FileSystem.cacheDirectory ?? "";
   const exportFileName = `${profile.slug}-${isoNow().replace(/[:.]/g, "-")}.zip`;
-  const exportPath = joinPath(downloadsDir, exportFileName);
+  const exportPath = joinPath(cacheDir, exportFileName);
   const zip = new SimpleZipArchive();
 
   await addFolderToZip(zip, profilePath, profile.slug);
@@ -250,6 +247,28 @@ export async function exportProfile(profileName: string) {
   await FileSystem.writeAsStringAsync(exportPath, zipData, {
     encoding: FileSystem.EncodingType.Base64,
   });
+
+  // Try StorageAccessFramework to save to user-chosen location (best for Android 11+)
+  try {
+    const permissions =
+      await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+    if (permissions.granted) {
+      const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
+        permissions.directoryUri,
+        exportFileName,
+        "application/zip",
+      );
+
+      await FileSystem.writeAsStringAsync(fileUri, zipData, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      return fileUri;
+    }
+  } catch {
+    // StorageAccessFramework not available, return cache path
+    console.warn("StorageAccessFramework not available");
+  }
 
   return exportPath;
 }
