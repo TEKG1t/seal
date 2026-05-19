@@ -1,12 +1,16 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { Audio, ResizeMode, Video } from "expo-av";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import * as Location from "expo-location";
+import * as VideoThumbnails from "expo-video-thumbnails";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
   Modal,
   Platform,
   Pressable,
+  Image as RNImage,
   SafeAreaView,
   StatusBar,
   StyleSheet,
@@ -16,8 +20,11 @@ import {
   View,
 } from "react-native";
 import DraggableFlatList from "react-native-draggable-flatlist";
+import ImageZoom from "react-native-image-pan-zoom";
 
 import {
+  addGroupItem,
+  addLocationItem,
   addMediaItem,
   addTextItem,
   createEvent,
@@ -33,14 +40,16 @@ import {
   listEvents,
   listItems,
   listProfiles,
+  LocationData,
+  moveItem,
   renameProfile,
   reorderItems,
   updateEvent,
   updateItem,
 } from "@/lib/journal-storage";
 
-type ScreenLevel = "home" | "profile" | "event";
-type ItemCreateKind = "text" | "image" | "video";
+type ScreenLevel = "home" | "profile" | "event" | "group";
+type ItemCreateKind = "text" | "image" | "video" | "group" | "location";
 
 type Palette = {
   bg: string;
@@ -67,8 +76,9 @@ const palette: Palette = {
 };
 
 export default function HomeScreen() {
-  const { width } = useWindowDimensions();
-  const statusBarHeight = Platform.OS === "android" ? (StatusBar.currentHeight ?? 0) : 0;
+  const { width, height } = useWindowDimensions();
+  const statusBarHeight =
+    Platform.OS === "android" ? (StatusBar.currentHeight ?? 0) : 0;
   const contentWidth = Math.min(width - 24, 940);
 
   const [screen, setScreen] = useState<ScreenLevel>("home");
@@ -78,19 +88,43 @@ export default function HomeScreen() {
   const [events, setEvents] = useState<JournalEvent[]>([]);
   const [items, setItems] = useState<JournalItem[]>([]);
 
-  const [selectedProfile, setSelectedProfile] = useState<JournalProfile | null>(null);
+  const [selectedProfile, setSelectedProfile] = useState<JournalProfile | null>(
+    null,
+  );
   const [selectedEvent, setSelectedEvent] = useState<JournalEvent | null>(null);
-  const [selectedEventPath, setSelectedEventPath] = useState<string | null>(null);
+  const [selectedEventPath, setSelectedEventPath] = useState<string | null>(
+    null,
+  );
+  const [selectedGroupPath, setSelectedGroupPath] = useState<string[]>([]);
+  const [selectedGroupTitles, setSelectedGroupTitles] = useState<string[]>([]);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showImportPlaceholder, setShowImportPlaceholder] = useState(false);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const previewListRef = useRef<FlatList<string> | null>(null);
+  const [previewImageUris, setPreviewImageUris] = useState<string[] | null>(
+    null,
+  );
+  const [previewImageIndex, setPreviewImageIndex] = useState(0);
+  const [previewZoomed, setPreviewZoomed] = useState(false);
+  const [previewVideoUri, setPreviewVideoUri] = useState<string | null>(null);
+  const [previewVideoTitle, setPreviewVideoTitle] = useState<string | null>(
+    null,
+  );
+  const [videoThumbnailUris, setVideoThumbnailUris] = useState<
+    Record<string, string>
+  >({});
 
   const [newProfileName, setNewProfileName] = useState("");
-  const [profileBeingEdited, setProfileBeingEdited] = useState<JournalProfile | null>(null);
-  const [eventBeingEdited, setEventBeingEdited] = useState<JournalEvent | null>(null);
-  const [itemBeingEdited, setItemBeingEdited] = useState<JournalItem | null>(null);
+  const [profileBeingEdited, setProfileBeingEdited] =
+    useState<JournalProfile | null>(null);
+  const [eventBeingEdited, setEventBeingEdited] = useState<JournalEvent | null>(
+    null,
+  );
+  const [itemBeingEdited, setItemBeingEdited] = useState<JournalItem | null>(
+    null,
+  );
   const [newEventName, setNewEventName] = useState("");
   const [newEventDate, setNewEventDate] = useState(todayIsoDate());
 
@@ -99,10 +133,40 @@ export default function HomeScreen() {
   const [newItemText, setNewItemText] = useState("");
   const [newItemComment, setNewItemComment] = useState("");
 
-  const [profileToDelete, setProfileToDelete] = useState<JournalProfile | null>(null);
+  const [profileToDelete, setProfileToDelete] = useState<JournalProfile | null>(
+    null,
+  );
   const [eventToDelete, setEventToDelete] = useState<JournalEvent | null>(null);
   const [itemToDelete, setItemToDelete] = useState<JournalItem | null>(null);
+  const [showMoveModal, setShowMoveModal] = useState(false);
+  const [movingItem, setMovingItem] = useState<JournalItem | null>(null);
+  const [moveTargets, setMoveTargets] = useState<
+    {
+      title: string;
+      pathDisplay: string;
+      path: string[];
+    }[]
+  >([]);
+  const [selectedMovePath, setSelectedMovePath] = useState<string[] | null>(
+    null,
+  );
   const [deleteConfirmName, setDeleteConfirmName] = useState("");
+
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
+  const [selectedLocation, setSelectedLocation] = useState<LocationData | null>(
+    null,
+  );
+  const mapRef = useRef<any>(null);
+  const mapsModule = useMemo(() => {
+    try {
+      // require at runtime to avoid native module errors in environments
+      // where react-native-maps isn't available (Expo web / dev client)
+       
+      return require("react-native-maps");
+    } catch {
+      return null;
+    }
+  }, []);
 
   const screenLabel = useMemo(() => {
     if (screen === "home") {
@@ -114,11 +178,21 @@ export default function HomeScreen() {
     }
 
     if (screen === "event" && selectedEvent) {
-      return { title: selectedEvent.title, subtitle: formatDate(selectedEvent.date) };
+      return {
+        title: selectedEvent.title,
+        subtitle: formatDate(selectedEvent.date),
+      };
+    }
+
+    if (screen === "group") {
+      return {
+        title: selectedGroupTitles[selectedGroupTitles.length - 1] ?? "Group",
+        subtitle: selectedEvent ? formatDate(selectedEvent.date) : undefined,
+      };
     }
 
     return { title: "Home" };
-  }, [screen, selectedEvent, selectedProfile]);
+  }, [screen, selectedEvent, selectedGroupTitles, selectedProfile]);
 
   const loadProfiles = useCallback(async () => {
     setProfiles(await listProfiles());
@@ -140,13 +214,13 @@ export default function HomeScreen() {
     }
 
     const [nextItems, paths] = await Promise.all([
-      listItems(selectedProfile.name, selectedEvent.id),
+      listItems(selectedProfile.name, selectedEvent.id, selectedGroupPath),
       getEventStoragePaths(selectedProfile.name, selectedEvent.id),
     ]);
 
     setSelectedEventPath(paths.eventPath);
     setItems(nextItems);
-  }, [selectedEvent, selectedProfile]);
+  }, [selectedEvent, selectedGroupPath, selectedProfile]);
 
   useEffect(() => {
     let mounted = true;
@@ -173,16 +247,30 @@ export default function HomeScreen() {
   }, [loadEvents, screen]);
 
   useEffect(() => {
-    if (screen === "event") {
+    if (screen === "event" || screen === "group") {
       loadItems().catch(() => undefined);
     }
   }, [loadItems, screen]);
 
   const onBack = () => {
+    if (screen === "group") {
+      const nextPath = selectedGroupPath.slice(0, -1);
+      const nextTitles = selectedGroupTitles.slice(0, -1);
+      setSelectedGroupPath(nextPath);
+      setSelectedGroupTitles(nextTitles);
+
+      if (nextPath.length === 0) {
+        setScreen("event");
+      }
+      return;
+    }
+
     if (screen === "event") {
       setScreen("profile");
       setSelectedEvent(null);
       setSelectedEventPath(null);
+      setSelectedGroupPath([]);
+      setSelectedGroupTitles([]);
       return;
     }
 
@@ -191,6 +279,8 @@ export default function HomeScreen() {
       setSelectedProfile(null);
       setSelectedEvent(null);
       setSelectedEventPath(null);
+      setSelectedGroupPath([]);
+      setSelectedGroupTitles([]);
     }
   };
 
@@ -219,6 +309,118 @@ export default function HomeScreen() {
     setDeleteConfirmName("");
   };
 
+  const closePreviewImage = () => {
+    setPreviewImageUris(null);
+    setPreviewImageIndex(0);
+    setPreviewZoomed(false);
+  };
+
+  const openPreviewImages = (imageUris: string[], startIndex = 0) => {
+    setPreviewVideoUri(null);
+    setPreviewVideoTitle(null);
+    // start prefetching neighbors to avoid flicker when swiping
+    try {
+      imageUris.forEach((u) => {
+        if (u) RNImage.prefetch(u);
+      });
+    } catch {
+      // prefetch best-effort
+    }
+
+    setPreviewImageUris(imageUris);
+    setPreviewImageIndex(startIndex);
+  };
+
+  const closePreviewVideo = () => {
+    setPreviewVideoUri(null);
+    setPreviewVideoTitle(null);
+  };
+
+  const openPreviewVideo = (videoUri: string, title?: string) => {
+    setPreviewImageUris(null);
+    setPreviewImageIndex(0);
+    setPreviewZoomed(false);
+    setPreviewVideoUri(videoUri);
+    setPreviewVideoTitle(title ?? null);
+  };
+
+  useEffect(() => {
+    if (!previewImageUris) return;
+    // ensure list scrolls to the requested index after mount
+    setTimeout(() => {
+      try {
+        previewListRef.current?.scrollToIndex({
+          index: previewImageIndex,
+          animated: false,
+        });
+      } catch {
+        // ignore if index not available yet
+      }
+    }, 50);
+  }, [previewImageUris, previewImageIndex]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const videoUris = Array.from(
+      new Set(
+        items
+          .map((item) => getItemVideoUri(item, selectedEventPath))
+          .filter((uri): uri is string => Boolean(uri)),
+      ),
+    );
+
+    const missingUris = videoUris.filter((uri) => !videoThumbnailUris[uri]);
+
+    if (missingUris.length === 0) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    (async () => {
+      const nextThumbnails: Record<string, string> = {};
+
+      for (const uri of missingUris) {
+        try {
+          const result = await VideoThumbnails.getThumbnailAsync(uri, {
+            time: 0,
+          });
+          nextThumbnails[uri] = result.uri;
+        } catch {
+          // keep a placeholder when thumbnail generation fails
+        }
+      }
+
+      if (cancelled) {
+        return;
+      }
+
+      if (Object.keys(nextThumbnails).length > 0) {
+        setVideoThumbnailUris((current) => ({
+          ...current,
+          ...nextThumbnails,
+        }));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [items, selectedEventPath, videoThumbnailUris]);
+
+  useEffect(() => {
+    if (!previewVideoUri) {
+      return;
+    }
+
+    Audio.setAudioModeAsync({
+      playsInSilentModeIOS: true,
+      shouldDuckAndroid: false,
+      staysActiveInBackground: false,
+    }).catch(() => undefined);
+  }, [previewVideoUri]);
+
   const submitCreate = async () => {
     if (screen === "home") {
       const name = newProfileName.trim();
@@ -240,7 +442,10 @@ export default function HomeScreen() {
       if (!title || !isValidLocalDate(newEventDate)) return;
 
       if (eventBeingEdited) {
-        await updateEvent(selectedProfile.name, eventBeingEdited.id, { title, date: newEventDate });
+        await updateEvent(selectedProfile.name, eventBeingEdited.id, {
+          title,
+          date: newEventDate,
+        });
       } else {
         await createEvent(selectedProfile.name, { title, date: newEventDate });
       }
@@ -250,7 +455,11 @@ export default function HomeScreen() {
       return;
     }
 
-    if (screen === "event" && selectedProfile && selectedEvent) {
+    if (
+      (screen === "event" || screen === "group") &&
+      selectedProfile &&
+      selectedEvent
+    ) {
       if (itemBeingEdited) {
         const title = newItemTitle.trim() || undefined;
 
@@ -258,16 +467,28 @@ export default function HomeScreen() {
           const text = newItemText.trim();
           if (!text) return;
 
-          await updateItem(selectedProfile.name, selectedEvent.id, itemBeingEdited.id, {
-            title,
-            text,
-            comment: newItemComment.trim() || undefined,
-          });
+          await updateItem(
+            selectedProfile.name,
+            selectedEvent.id,
+            itemBeingEdited.id,
+            selectedGroupPath,
+            {
+              title,
+              text,
+              comment: newItemComment.trim() || undefined,
+            },
+          );
         } else {
-          await updateItem(selectedProfile.name, selectedEvent.id, itemBeingEdited.id, {
-            title,
-            comment: newItemComment.trim() || undefined,
-          });
+          await updateItem(
+            selectedProfile.name,
+            selectedEvent.id,
+            itemBeingEdited.id,
+            selectedGroupPath,
+            {
+              title,
+              comment: newItemComment.trim() || undefined,
+            },
+          );
         }
 
         await loadItems();
@@ -279,32 +500,70 @@ export default function HomeScreen() {
         const text = newItemText.trim();
         if (!text) return;
 
-        await addTextItem(selectedProfile.name, selectedEvent.id, {
-          title: newItemTitle.trim() || undefined,
-          text,
-          comment: newItemComment.trim() || undefined,
-        });
+        await addTextItem(
+          selectedProfile.name,
+          selectedEvent.id,
+          selectedGroupPath,
+          {
+            title: newItemTitle.trim() || undefined,
+            text,
+            comment: newItemComment.trim() || undefined,
+          },
+        );
         await loadItems();
         closeCreateModal();
         return;
       }
 
+      if (newItemKind === "group") {
+        await addGroupItem(
+          selectedProfile.name,
+          selectedEvent.id,
+          selectedGroupPath,
+          {
+            title: newItemTitle.trim() || undefined,
+            comment: newItemComment.trim() || undefined,
+          },
+        );
+        await loadItems();
+        closeCreateModal();
+        return;
+      }
+
+      if (newItemKind === "location") {
+        await openLocationPicker();
+        return;
+      }
+
       const mediaResult = await ImagePicker.launchImageLibraryAsync({
         mediaTypes:
-          newItemKind === "image" ? ImagePicker.MediaTypeOptions.Images : ImagePicker.MediaTypeOptions.Videos,
+          newItemKind === "image"
+            ? ImagePicker.MediaTypeOptions.Images
+            : ImagePicker.MediaTypeOptions.Videos,
         quality: 0.8,
+        allowsMultipleSelection: newItemKind === "image",
+        selectionLimit: newItemKind === "image" ? 0 : 1,
       });
 
-      if (mediaResult.canceled || !mediaResult.assets[0]) return;
+      if (mediaResult.canceled || !mediaResult.assets.length) return;
 
-      const asset = mediaResult.assets[0];
-      await addMediaItem(selectedProfile.name, selectedEvent.id, {
-        sourceUri: asset.uri,
-        kind: newItemKind,
-        mimeType: asset.mimeType,
-        title: newItemTitle.trim() || undefined,
-        comment: newItemComment.trim() || undefined,
-      });
+      const assets = mediaResult.assets;
+      await addMediaItem(
+        selectedProfile.name,
+        selectedEvent.id,
+        selectedGroupPath,
+        {
+          kind: newItemKind,
+          sourceUris:
+            newItemKind === "image"
+              ? assets.map((asset) => asset.uri)
+              : undefined,
+          sourceUri: newItemKind === "video" ? assets[0].uri : undefined,
+          mimeType: assets[0].mimeType,
+          title: newItemTitle.trim() || undefined,
+          comment: newItemComment.trim() || undefined,
+        },
+      );
       await loadItems();
       closeCreateModal();
     }
@@ -329,7 +588,8 @@ export default function HomeScreen() {
   };
 
   const submitDeleteProfile = async () => {
-    if (!profileToDelete || deleteConfirmName.trim() !== profileToDelete.name) return;
+    if (!profileToDelete || deleteConfirmName.trim() !== profileToDelete.name)
+      return;
 
     await deleteProfile(profileToDelete.name);
     await loadProfiles();
@@ -353,7 +613,12 @@ export default function HomeScreen() {
   };
 
   const submitDeleteEvent = async () => {
-    if (!eventToDelete || !selectedProfile || deleteConfirmName.trim() !== eventToDelete.title) return;
+    if (
+      !eventToDelete ||
+      !selectedProfile ||
+      deleteConfirmName.trim() !== eventToDelete.title
+    )
+      return;
 
     await deleteEvent(selectedProfile.name, eventToDelete.id);
     await loadEvents();
@@ -370,11 +635,79 @@ export default function HomeScreen() {
 
   const startEditItem = (item: JournalItem) => {
     setItemBeingEdited(item);
-    setNewItemKind(item.kind === "text" ? "text" : item.media?.kind ?? "text");
+    setNewItemKind(
+      item.kind === "text"
+        ? "text"
+        : item.kind === "group"
+          ? "group"
+          : (item.media?.kind ?? "text"),
+    );
     setNewItemTitle(item.title ?? "");
     setNewItemText(item.text ?? "");
     setNewItemComment(item.comment ?? "");
     setShowCreateModal(true);
+  };
+
+  const openMoveModalForItem = async (item: JournalItem) => {
+    if (!selectedProfile || !selectedEvent) return;
+    setMovingItem(item);
+    setShowMoveModal(true);
+
+    // load possible targets (event root + all groups)
+    try {
+      const top = await listItems(selectedProfile.name, selectedEvent.id, []);
+      const targets: { title: string; pathDisplay: string; path: string[] }[] =
+        [{ title: "Event root", pathDisplay: "", path: [] }];
+
+      function collect(
+        groups: JournalItem[],
+        path: string[],
+        breadcrumbs: string[],
+      ) {
+        for (const g of groups) {
+          if (g.kind === "group") {
+            const label = g.title?.trim() || "Group";
+            const nextBreadcrumbs = [...breadcrumbs, label];
+            targets.push({
+              title: `${label} (${g.groupItems?.length ?? 0})`,
+              pathDisplay: nextBreadcrumbs.join("/"),
+              path: [...path, g.id],
+            });
+            if (g.groupItems && g.groupItems.length) {
+              collect(g.groupItems, [...path, g.id], nextBreadcrumbs);
+            }
+          }
+        }
+      }
+
+      collect(top, [], []);
+      setMoveTargets(targets);
+      // default select event root
+      setSelectedMovePath([]);
+    } catch {
+      setMoveTargets([{ title: "Event root", pathDisplay: "", path: [] }]);
+      setSelectedMovePath([]);
+    }
+  };
+
+  const submitMove = async () => {
+    if (!movingItem || !selectedProfile || !selectedEvent) return;
+    const toPath = selectedMovePath ?? [];
+    try {
+      await moveItem(
+        selectedProfile.name,
+        selectedEvent.id,
+        movingItem.id,
+        selectedGroupPath,
+        toPath,
+      );
+    } catch {
+      // swallow for now
+    }
+    setShowMoveModal(false);
+    setMovingItem(null);
+    setSelectedMovePath(null);
+    await loadItems();
   };
 
   const submitDeleteItem = async () => {
@@ -385,6 +718,63 @@ export default function HomeScreen() {
     closeDeleteModal();
   };
 
+  const openLocationPicker = async () => {
+    setShowLocationPicker(true);
+    // Try to get user's current location
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status === "granted") {
+        const loc = await Location.getCurrentPositionAsync({});
+        setSelectedLocation({
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+          zoom: 15,
+        });
+      } else {
+        // Default to San Francisco if permission denied
+        setSelectedLocation({
+          latitude: 37.7749,
+          longitude: -122.4194,
+          zoom: 15,
+        });
+      }
+    } catch {
+      // Default fallback
+      setSelectedLocation({
+        latitude: 37.7749,
+        longitude: -122.4194,
+        zoom: 15,
+      });
+    }
+  };
+
+  const confirmLocationSelection = async () => {
+    if (!selectedLocation) return;
+    if (!selectedProfile || !selectedEvent) return;
+
+    try {
+      await addLocationItem(
+        selectedProfile.name,
+        selectedEvent.id,
+        selectedGroupPath,
+        {
+          latitude: selectedLocation.latitude,
+          longitude: selectedLocation.longitude,
+          zoom: selectedLocation.zoom,
+          address: selectedLocation.address,
+          title: newItemTitle.trim() || undefined,
+          comment: newItemComment.trim() || undefined,
+        },
+      );
+      await loadItems();
+      setShowLocationPicker(false);
+      setSelectedLocation(null);
+      closeCreateModal();
+    } catch {
+      // swallow for now
+    }
+  };
+
   const openProfile = (profile: JournalProfile) => {
     setSelectedProfile(profile);
     setScreen("profile");
@@ -392,17 +782,43 @@ export default function HomeScreen() {
 
   const openEvent = (event: JournalEvent) => {
     setSelectedEvent(event);
+    setSelectedGroupPath([]);
+    setSelectedGroupTitles([]);
     setScreen("event");
   };
 
+  const openGroup = (item: JournalItem) => {
+    setSelectedGroupPath((current) => [...current, item.id]);
+    setSelectedGroupTitles((current) => [...current, itemCardLabel(item)]);
+    setScreen("group");
+  };
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: palette.bg }]}> 
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: palette.bg }]}>
       <View style={[styles.topGlow, { backgroundColor: "#0f2f3a" }]} />
 
-      <View style={[styles.header, { borderBottomColor: palette.border, paddingTop: statusBarHeight + 8 }]}> 
+      <View
+        style={[
+          styles.header,
+          {
+            borderBottomColor: palette.border,
+            paddingTop: statusBarHeight + 8,
+          },
+        ]}
+      >
         <View style={styles.headerSide}>
           {screen === "home" ? null : (
-            <Pressable onPress={onBack} style={({ pressed }) => [styles.iconButton, { borderColor: palette.border, backgroundColor: palette.cardMuted }, pressed && styles.pressed]}>
+            <Pressable
+              onPress={onBack}
+              style={({ pressed }) => [
+                styles.iconButton,
+                {
+                  borderColor: palette.border,
+                  backgroundColor: palette.cardMuted,
+                },
+                pressed && styles.pressed,
+              ]}
+            >
               <MaterialIcons name="arrow-back" size={20} color={palette.text} />
             </Pressable>
           )}
@@ -411,16 +827,40 @@ export default function HomeScreen() {
         <View style={styles.headerCenter}>
           {screenLabel.subtitle ? (
             <>
-              <Text style={[styles.headerSubtitle, { color: palette.textMuted }]}>{screenLabel.subtitle}</Text>
-              <Text style={[styles.headerTitleEvent, { color: palette.text }]} numberOfLines={1}>{screenLabel.title}</Text>
+              <Text
+                style={[styles.headerSubtitle, { color: palette.textMuted }]}
+              >
+                {screenLabel.subtitle}
+              </Text>
+              <Text
+                style={[styles.headerTitleEvent, { color: palette.text }]}
+                numberOfLines={1}
+              >
+                {screenLabel.title}
+              </Text>
             </>
           ) : (
-            <Text style={[styles.headerTitle, { color: palette.text }]} numberOfLines={1}>{screenLabel.title}</Text>
+            <Text
+              style={[styles.headerTitle, { color: palette.text }]}
+              numberOfLines={1}
+            >
+              {screenLabel.title}
+            </Text>
           )}
         </View>
 
         <View style={styles.headerSide}>
-          <Pressable onPress={openCreateModal} style={({ pressed }) => [styles.iconButton, { borderColor: palette.border, backgroundColor: palette.cardMuted }, pressed && styles.pressed]}>
+          <Pressable
+            onPress={openCreateModal}
+            style={({ pressed }) => [
+              styles.iconButton,
+              {
+                borderColor: palette.border,
+                backgroundColor: palette.cardMuted,
+              },
+              pressed && styles.pressed,
+            ]}
+          >
             <MaterialIcons name="add" size={22} color={palette.accent} />
           </Pressable>
         </View>
@@ -435,36 +875,115 @@ export default function HomeScreen() {
 
         {loading ? (
           <View style={styles.emptyWrap}>
-            <Text style={[styles.emptyText, { color: palette.textMuted }]}>Loading...</Text>
+            <Text style={[styles.emptyText, { color: palette.textMuted }]}>
+              Loading...
+            </Text>
           </View>
         ) : (
           <View style={{ width: contentWidth, flex: 1 }}>
             {screen === "home" ? (
               <FlatList
                 data={profiles}
-                keyExtractor={(item) => item.id}
+                keyExtractor={(item) => item.name}
                 contentContainerStyle={styles.listContent}
                 renderItem={({ item }) => (
-                  <View style={[styles.profileCard, { backgroundColor: palette.card, borderColor: palette.border }]}> 
-                    <Pressable onPress={() => openProfile(item)} style={({ pressed }) => [styles.profileMain, pressed && styles.pressed]} hitSlop={6}>
-                      <Text style={[styles.profileName, { color: palette.text }]}>{item.name}</Text>
-                      <Text style={[styles.profileDate, { color: palette.textMuted }]}>created {formatDate(item.createdAt.slice(0, 10))}</Text>
+                  <View
+                    style={[
+                      styles.profileCard,
+                      {
+                        backgroundColor: palette.card,
+                        borderColor: palette.border,
+                      },
+                    ]}
+                  >
+                    <Pressable
+                      onPress={() => openProfile(item)}
+                      style={({ pressed }) => [
+                        styles.profileMain,
+                        pressed && styles.pressed,
+                      ]}
+                      hitSlop={6}
+                    >
+                      <Text
+                        style={[styles.profileName, { color: palette.text }]}
+                      >
+                        {" "}
+                        {item.name}{" "}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.profileDate,
+                          { color: palette.textMuted },
+                        ]}
+                      >
+                        created {formatDate(item.createdAt.slice(0, 10))}
+                      </Text>
                     </Pressable>
 
                     <View style={styles.profileActions}>
-                      <Pressable onPress={() => handleExportProfile(item)} style={({ pressed }) => [styles.trashButton, { borderColor: palette.border, backgroundColor: palette.cardMuted }, pressed && styles.pressed]}>
-                        <MaterialIcons name="archive" size={20} color={palette.text} />
+                      <Pressable
+                        onPress={() => handleExportProfile(item)}
+                        style={({ pressed }) => [
+                          styles.trashButton,
+                          {
+                            borderColor: palette.border,
+                            backgroundColor: palette.cardMuted,
+                          },
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <MaterialIcons
+                          name="archive"
+                          size={20}
+                          color={palette.text}
+                        />
                       </Pressable>
-                      <Pressable onPress={() => startEditProfile(item)} style={({ pressed }) => [styles.trashButton, { borderColor: palette.border, backgroundColor: palette.cardMuted }, pressed && styles.pressed]}>
-                        <MaterialIcons name="edit" size={20} color={palette.accent} />
+                      <Pressable
+                        onPress={() => startEditProfile(item)}
+                        style={({ pressed }) => [
+                          styles.trashButton,
+                          {
+                            borderColor: palette.border,
+                            backgroundColor: palette.cardMuted,
+                          },
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <MaterialIcons
+                          name="edit"
+                          size={20}
+                          color={palette.accent}
+                        />
                       </Pressable>
-                      <Pressable onPress={() => startDeleteProfile(item)} style={({ pressed }) => [styles.trashButton, { borderColor: palette.border, backgroundColor: palette.cardMuted }, pressed && styles.pressed]}>
-                        <MaterialIcons name="delete-outline" size={22} color={palette.danger} />
+                      <Pressable
+                        onPress={() => startDeleteProfile(item)}
+                        style={({ pressed }) => [
+                          styles.trashButton,
+                          {
+                            borderColor: palette.border,
+                            backgroundColor: palette.cardMuted,
+                          },
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <MaterialIcons
+                          name="delete-outline"
+                          size={22}
+                          color={palette.danger}
+                        />
                       </Pressable>
                     </View>
                   </View>
                 )}
-                ListEmptyComponent={<View style={styles.emptyWrap}><Text style={[styles.emptyText, { color: palette.textMuted }]}>No profiles yet. Press + to create one.</Text></View>}
+                ListEmptyComponent={
+                  <View style={styles.emptyWrap}>
+                    <Text
+                      style={[styles.emptyText, { color: palette.textMuted }]}
+                    >
+                      No profiles yet. Press + to create one.
+                    </Text>
+                  </View>
+                }
               />
             ) : null}
 
@@ -474,80 +993,783 @@ export default function HomeScreen() {
                 keyExtractor={(item) => item.id}
                 contentContainerStyle={styles.listContent}
                 renderItem={({ item }) => (
-                  <View style={[styles.eventCard, { backgroundColor: palette.card, borderColor: palette.border }]}> 
-                    <Pressable onPress={() => openEvent(item)} style={({ pressed }) => [styles.eventMain, pressed && styles.pressed]}>
-                      <Text style={[styles.eventDate, { color: palette.textMuted }]}>{formatDate(item.date)}</Text>
-                      <Text style={[styles.eventTitle, { color: palette.text }]}>{item.title}</Text>
-                      <Text style={[styles.eventMeta, { color: palette.textMuted }]}>{item.itemCount} items</Text>
+                  <View
+                    style={[
+                      styles.eventCard,
+                      {
+                        backgroundColor: palette.card,
+                        borderColor: palette.border,
+                      },
+                    ]}
+                  >
+                    <Pressable
+                      onPress={() => openEvent(item)}
+                      style={({ pressed }) => [
+                        styles.eventMain,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Text
+                        style={[styles.eventDate, { color: palette.textMuted }]}
+                      >
+                        {formatDate(item.date)}
+                      </Text>
+                      <Text
+                        style={[styles.eventTitle, { color: palette.text }]}
+                      >
+                        {item.title}
+                      </Text>
+                      <Text
+                        style={[styles.eventMeta, { color: palette.textMuted }]}
+                      >
+                        {item.itemCount} items
+                      </Text>
                     </Pressable>
 
                     <View style={styles.profileActions}>
-                      <Pressable onPress={() => startEditEvent(item)} style={({ pressed }) => [styles.trashButton, { borderColor: palette.border, backgroundColor: palette.cardMuted }, pressed && styles.pressed]}>
-                        <MaterialIcons name="edit" size={20} color={palette.accent} />
+                      <Pressable
+                        onPress={() => startEditEvent(item)}
+                        style={({ pressed }) => [
+                          styles.trashButton,
+                          {
+                            borderColor: palette.border,
+                            backgroundColor: palette.cardMuted,
+                          },
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <MaterialIcons
+                          name="edit"
+                          size={20}
+                          color={palette.accent}
+                        />
                       </Pressable>
-                      <Pressable onPress={() => startDeleteEvent(item)} style={({ pressed }) => [styles.trashButton, { borderColor: palette.border, backgroundColor: palette.cardMuted }, pressed && styles.pressed]}>
-                        <MaterialIcons name="delete-outline" size={22} color={palette.danger} />
+                      <Pressable
+                        onPress={() => startDeleteEvent(item)}
+                        style={({ pressed }) => [
+                          styles.trashButton,
+                          {
+                            borderColor: palette.border,
+                            backgroundColor: palette.cardMuted,
+                          },
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <MaterialIcons
+                          name="delete-outline"
+                          size={22}
+                          color={palette.danger}
+                        />
                       </Pressable>
                     </View>
                   </View>
                 )}
-                ListEmptyComponent={<View style={styles.emptyWrap}><Text style={[styles.emptyText, { color: palette.textMuted }]}>No events yet. Press + to create one.</Text></View>}
+                ListEmptyComponent={
+                  <View style={styles.emptyWrap}>
+                    <Text
+                      style={[styles.emptyText, { color: palette.textMuted }]}
+                    >
+                      No events yet. Press + to create one.
+                    </Text>
+                  </View>
+                }
               />
             ) : null}
 
             {screen === "event" ? (
               <DraggableFlatList<JournalItem>
-                data={[...items].sort((left, right) => left.order - right.order)}
+                data={[...items].sort(
+                  (left, right) => left.order - right.order,
+                )}
                 keyExtractor={(item) => item.id}
                 contentContainerStyle={styles.listContent}
                 activationDistance={8}
                 onDragEnd={({ data }) => {
                   if (!selectedProfile || !selectedEvent) return;
 
-                  const normalized = data.map((entry, index) => ({ ...entry, order: index }));
+                  const normalized = data.map((entry, index) => ({
+                    ...entry,
+                    order: index,
+                  }));
                   setItems(normalized);
-                  reorderItems(selectedProfile.name, selectedEvent.id, normalized.map((entry) => entry.id)).catch(() => undefined);
+                  reorderItems(
+                    selectedProfile.name,
+                    selectedEvent.id,
+                    normalized.map((entry) => entry.id),
+                  ).catch(() => undefined);
+                }}
+                renderItem={({ item, drag, isActive }) =>
+                  (() => {
+                    const imageUris = getItemImageUris(item, selectedEventPath);
+                    const visibleImageUris = imageUris.slice(0, 4);
+                    const extraImageCount =
+                      imageUris.length - visibleImageUris.length;
+
+                    return (
+                      <View
+                        style={[
+                          styles.itemCard,
+                          {
+                            backgroundColor: palette.card,
+                            borderColor: palette.border,
+                            opacity: isActive ? 0.9 : 1,
+                          },
+                        ]}
+                      >
+                        <Pressable
+                          onLongPress={drag}
+                          delayLongPress={120}
+                          style={styles.itemTopRow}
+                        >
+                          <Text
+                            style={[styles.itemTitle, { color: palette.text }]}
+                          >
+                            {itemCardLabel(item)}
+                          </Text>
+                          <View style={styles.profileActions}>
+                            <Pressable
+                              onPress={() => startEditItem(item)}
+                              style={({ pressed }) => [
+                                styles.trashButton,
+                                {
+                                  borderColor: palette.border,
+                                  backgroundColor: palette.cardMuted,
+                                },
+                                pressed && styles.pressed,
+                              ]}
+                            >
+                              <MaterialIcons
+                                name="edit"
+                                size={20}
+                                color={palette.accent}
+                              />
+                            </Pressable>
+                            <Pressable
+                              onPress={() => openMoveModalForItem(item)}
+                              style={({ pressed }) => [
+                                styles.trashButton,
+                                {
+                                  borderColor: palette.border,
+                                  backgroundColor: palette.cardMuted,
+                                },
+                                pressed && styles.pressed,
+                              ]}
+                            >
+                              <MaterialIcons
+                                name="drive-file-move"
+                                size={20}
+                                color={palette.text}
+                              />
+                            </Pressable>
+                            <Pressable
+                              onPress={() => startDeleteItem(item)}
+                              style={({ pressed }) => [
+                                styles.trashButton,
+                                {
+                                  borderColor: palette.border,
+                                  backgroundColor: palette.cardMuted,
+                                },
+                                pressed && styles.pressed,
+                              ]}
+                            >
+                              <MaterialIcons
+                                name="delete-outline"
+                                size={18}
+                                color={palette.danger}
+                              />
+                            </Pressable>
+                          </View>
+                        </Pressable>
+
+                        {item.text ? (
+                          <Text
+                            style={[styles.itemBody, { color: palette.text }]}
+                          >
+                            {item.text}
+                          </Text>
+                        ) : null}
+                        {item.comment ? (
+                          <Text
+                            style={[
+                              styles.itemComment,
+                              { color: palette.textMuted },
+                            ]}
+                          >
+                            {item.comment}
+                          </Text>
+                        ) : null}
+
+                        {item.kind === "group" ? (
+                          <Pressable
+                            onPress={() => openGroup(item)}
+                            style={({ pressed }) => [
+                              styles.groupCard,
+                              {
+                                borderColor: palette.border,
+                                backgroundColor: palette.cardMuted,
+                              },
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <MaterialIcons
+                              name="folder"
+                              size={34}
+                              color={palette.accent}
+                            />
+                            <View style={{ flex: 1 }}>
+                              <Text
+                                style={{
+                                  color: palette.text,
+                                  fontWeight: "700",
+                                }}
+                              >
+                                {item.title?.trim() || "Group"}
+                              </Text>
+                              <Text
+                                style={{
+                                  color: palette.textMuted,
+                                  marginTop: 2,
+                                }}
+                              >
+                                {item.groupItems?.length ?? 0} items
+                              </Text>
+                              {item.comment ? (
+                                <Text
+                                  style={{
+                                    color: palette.textMuted,
+                                    marginTop: 4,
+                                    fontStyle: "italic",
+                                  }}
+                                >
+                                  {item.comment}
+                                </Text>
+                              ) : null}
+                            </View>
+                            <MaterialIcons
+                              name="chevron-right"
+                              size={22}
+                              color={palette.textMuted}
+                            />
+                          </Pressable>
+                        ) : imageUris.length > 0 ? (
+                          <View
+                            style={[
+                              styles.itemImageGrid,
+                              imageUris.length === 1
+                                ? styles.itemImageGridSingle
+                                : styles.itemImageGridMulti,
+                            ]}
+                          >
+                            {imageUris
+                              .slice(0, 4)
+                              .reduce<string[][]>((rows, uri, index) => {
+                                const rowIndex = Math.floor(index / 2);
+                                if (!rows[rowIndex]) rows[rowIndex] = [];
+                                rows[rowIndex].push(uri);
+                                return rows;
+                              }, [])
+                              .map((row, rowIndex) => (
+                                <View
+                                  key={`row-${rowIndex}`}
+                                  style={styles.itemImageRow}
+                                >
+                                  {row.map((uri, cellIndex) => {
+                                    const imageIndex = rowIndex * 2 + cellIndex;
+                                    const isLastVisible = imageIndex === 3;
+                                    return (
+                                      <Pressable
+                                        key={`${uri}-${imageIndex}`}
+                                        onPress={() =>
+                                          openPreviewImages(
+                                            imageUris,
+                                            imageIndex,
+                                          )
+                                        }
+                                        style={({ pressed }) => [
+                                          styles.itemImageCell,
+                                          imageUris.length === 1
+                                            ? styles.itemImageCellSingle
+                                            : styles.itemImageCellMulti,
+                                          pressed && styles.pressed,
+                                        ]}
+                                      >
+                                        <Image
+                                          source={{ uri }}
+                                          style={styles.itemImage}
+                                          contentFit="cover"
+                                        />
+                                        {isLastVisible &&
+                                        extraImageCount > 0 ? (
+                                          <View style={styles.itemImageOverlay}>
+                                            <Text
+                                              style={
+                                                styles.itemImageOverlayText
+                                              }
+                                            >
+                                              +{extraImageCount}
+                                            </Text>
+                                          </View>
+                                        ) : null}
+                                      </Pressable>
+                                    );
+                                  })}
+                                </View>
+                              ))}
+                          </View>
+                        ) : null}
+
+                        {item.media?.kind === "video" ? (
+                          <Pressable
+                            onPress={() => {
+                              const videoUri = getItemVideoUri(
+                                item,
+                                selectedEventPath,
+                              );
+                              if (videoUri) {
+                                openPreviewVideo(videoUri, itemCardLabel(item));
+                              }
+                            }}
+                            style={({ pressed }) => [
+                              styles.videoPreview,
+                              {
+                                borderColor: palette.border,
+                                backgroundColor: palette.cardMuted,
+                              },
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <View style={styles.videoPreviewThumbWrap}>
+                              {(() => {
+                                const videoUri = getItemVideoUri(
+                                  item,
+                                  selectedEventPath,
+                                );
+                                const thumbnailUri = videoUri
+                                  ? videoThumbnailUris[videoUri]
+                                  : undefined;
+
+                                return thumbnailUri ? (
+                                  <Image
+                                    source={{ uri: thumbnailUri }}
+                                    style={styles.videoPreviewThumb}
+                                    contentFit="cover"
+                                  />
+                                ) : (
+                                  <View
+                                    style={[
+                                      styles.videoPreviewThumb,
+                                      styles.videoPreviewThumbFallback,
+                                    ]}
+                                  >
+                                    <MaterialIcons
+                                      name="movie"
+                                      size={36}
+                                      color={palette.textMuted}
+                                    />
+                                  </View>
+                                );
+                              })()}
+                              <View style={styles.videoPlayOverlay}>
+                                <MaterialIcons
+                                  name="play-circle-filled"
+                                  size={48}
+                                  color="#ffffff"
+                                />
+                              </View>
+                            </View>
+                            <View style={styles.videoBadgeRow}>
+                              <MaterialIcons
+                                name="videocam"
+                                size={18}
+                                color={palette.textMuted}
+                              />
+                              <Text
+                                style={[
+                                  styles.videoBadgeText,
+                                  { color: palette.textMuted },
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {item.media.fileName}
+                              </Text>
+                            </View>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    );
+                  })()
+                }
+                ListEmptyComponent={
+                  <View style={styles.emptyWrap}>
+                    <Text
+                      style={[styles.emptyText, { color: palette.textMuted }]}
+                    >
+                      No items yet. Press + to add one.
+                    </Text>
+                  </View>
+                }
+              />
+            ) : null}
+
+            {screen === "group" ? (
+              <DraggableFlatList<JournalItem>
+                data={[...items].sort(
+                  (left, right) => left.order - right.order,
+                )}
+                keyExtractor={(item) => item.id}
+                contentContainerStyle={styles.listContent}
+                activationDistance={8}
+                onDragEnd={({ data }) => {
+                  if (!selectedProfile || !selectedEvent) return;
+
+                  const normalized = data.map((entry, index) => ({
+                    ...entry,
+                    order: index,
+                  }));
+                  setItems(normalized);
+                  reorderItems(
+                    selectedProfile.name,
+                    selectedEvent.id,
+                    normalized.map((entry) => entry.id),
+                    selectedGroupPath,
+                  ).catch(() => undefined);
                 }}
                 renderItem={({ item, drag, isActive }) => (
-                  <View style={[styles.itemCard, { backgroundColor: palette.card, borderColor: palette.border, opacity: isActive ? 0.9 : 1 }]}>
-                    <Pressable onLongPress={drag} delayLongPress={120} style={styles.itemTopRow}>
-                      <Text style={[styles.itemTitle, { color: palette.text }]}>{itemCardLabel(item)}</Text>
+                  <View
+                    style={[
+                      styles.itemCard,
+                      {
+                        backgroundColor: palette.card,
+                        borderColor: palette.border,
+                        opacity: isActive ? 0.9 : 1,
+                      },
+                    ]}
+                  >
+                    <Pressable
+                      onLongPress={drag}
+                      delayLongPress={120}
+                      style={styles.itemTopRow}
+                    >
+                      <Text style={[styles.itemTitle, { color: palette.text }]}>
+                        {itemCardLabel(item)}
+                      </Text>
                       <View style={styles.profileActions}>
-                        <Pressable onPress={() => startEditItem(item)} style={({ pressed }) => [styles.trashButton, { borderColor: palette.border, backgroundColor: palette.cardMuted }, pressed && styles.pressed]}>
-                          <MaterialIcons name="edit" size={20} color={palette.accent} />
+                        <Pressable
+                          onPress={() => startEditItem(item)}
+                          style={({ pressed }) => [
+                            styles.trashButton,
+                            {
+                              borderColor: palette.border,
+                              backgroundColor: palette.cardMuted,
+                            },
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <MaterialIcons
+                            name="edit"
+                            size={20}
+                            color={palette.accent}
+                          />
                         </Pressable>
-                        <Pressable onPress={() => startDeleteItem(item)} style={({ pressed }) => [styles.trashButton, { borderColor: palette.border, backgroundColor: palette.cardMuted }, pressed && styles.pressed]}>
-                          <MaterialIcons name="delete-outline" size={18} color={palette.danger} />
+                        <Pressable
+                          onPress={() => openMoveModalForItem(item)}
+                          style={({ pressed }) => [
+                            styles.trashButton,
+                            {
+                              borderColor: palette.border,
+                              backgroundColor: palette.cardMuted,
+                            },
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <MaterialIcons
+                            name="drive-file-move"
+                            size={20}
+                            color={palette.text}
+                          />
+                        </Pressable>
+                        <Pressable
+                          onPress={() => startDeleteItem(item)}
+                          style={({ pressed }) => [
+                            styles.trashButton,
+                            {
+                              borderColor: palette.border,
+                              backgroundColor: palette.cardMuted,
+                            },
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <MaterialIcons
+                            name="delete-outline"
+                            size={18}
+                            color={palette.danger}
+                          />
                         </Pressable>
                       </View>
                     </Pressable>
 
-                    {item.text ? <Text style={[styles.itemBody, { color: palette.text }]}>{item.text}</Text> : null}
-                    {item.comment ? <Text style={[styles.itemComment, { color: palette.textMuted }]}>{item.comment}</Text> : null}
+                    {item.kind === "group" ? (
+                      <Pressable
+                        onPress={() => openGroup(item)}
+                        style={({ pressed }) => [
+                          {
+                            marginTop: 10,
+                            borderWidth: 1,
+                            borderRadius: 16,
+                            padding: 14,
+                            gap: 12,
+                            flexDirection: "row",
+                            alignItems: "center",
+                            borderColor: palette.border,
+                            backgroundColor: palette.cardMuted,
+                          },
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <MaterialIcons
+                          name="folder"
+                          size={34}
+                          color={palette.accent}
+                        />
+                        <View style={{ flex: 1 }}>
+                          <Text
+                            style={{ color: palette.text, fontWeight: "700" }}
+                          >
+                            {item.title?.trim() || "Group"}
+                          </Text>
+                          <Text
+                            style={{ color: palette.textMuted, marginTop: 2 }}
+                          >
+                            {item.groupItems?.length ?? 0} items
+                          </Text>
+                          {item.comment ? (
+                            <Text
+                              style={{
+                                color: palette.textMuted,
+                                marginTop: 4,
+                                fontStyle: "italic",
+                              }}
+                            >
+                              {item.comment}
+                            </Text>
+                          ) : null}
+                        </View>
+                        <MaterialIcons
+                          name="chevron-right"
+                          size={22}
+                          color={palette.textMuted}
+                        />
+                      </Pressable>
+                    ) : (
+                      <>
+                        {item.text ? (
+                          <Text
+                            style={[styles.itemBody, { color: palette.text }]}
+                          >
+                            {item.text}
+                          </Text>
+                        ) : null}
+                        {item.comment ? (
+                          <Text
+                            style={[
+                              styles.itemComment,
+                              { color: palette.textMuted },
+                            ]}
+                          >
+                            {item.comment}
+                          </Text>
+                        ) : null}
 
-                    {item.media?.kind === "image" && selectedEventPath ? (
-                      <Image source={{ uri: `${selectedEventPath}/${item.media.fileName}` }} style={styles.itemImage} contentFit="cover" />
-                    ) : null}
+                        {(() => {
+                          const imageUris = getItemImageUris(
+                            item,
+                            selectedEventPath,
+                          );
+                          const visibleImageUris = imageUris.slice(0, 4);
+                          const extraImageCount =
+                            imageUris.length - visibleImageUris.length;
 
-                    {item.media?.kind === "video" ? (
-                      <View style={[styles.videoBadge, { borderColor: palette.border, backgroundColor: palette.cardMuted }]}>
-                        <MaterialIcons name="videocam" size={18} color={palette.textMuted} />
-                        <Text style={[styles.videoBadgeText, { color: palette.textMuted }]}>{item.media.fileName}</Text>
-                      </View>
-                    ) : null}
+                          return imageUris.length > 0 ? (
+                            <View
+                              style={[
+                                styles.itemImageGrid,
+                                imageUris.length === 1
+                                  ? styles.itemImageGridSingle
+                                  : styles.itemImageGridMulti,
+                              ]}
+                            >
+                              {imageUris
+                                .slice(0, 4)
+                                .reduce<string[][]>((rows, uri, index) => {
+                                  const rowIndex = Math.floor(index / 2);
+                                  if (!rows[rowIndex]) rows[rowIndex] = [];
+                                  rows[rowIndex].push(uri);
+                                  return rows;
+                                }, [])
+                                .map((row, rowIndex) => (
+                                  <View
+                                    key={`row-${rowIndex}`}
+                                    style={styles.itemImageRow}
+                                  >
+                                    {row.map((uri, cellIndex) => {
+                                      const imageIndex =
+                                        rowIndex * 2 + cellIndex;
+                                      const isLastVisible = imageIndex === 3;
+                                      return (
+                                        <Pressable
+                                          key={`${uri}-${imageIndex}`}
+                                          onPress={() =>
+                                            openPreviewImages(
+                                              imageUris,
+                                              imageIndex,
+                                            )
+                                          }
+                                          style={({ pressed }) => [
+                                            styles.itemImageCell,
+                                            imageUris.length === 1
+                                              ? styles.itemImageCellSingle
+                                              : styles.itemImageCellMulti,
+                                            pressed && styles.pressed,
+                                          ]}
+                                        >
+                                          <Image
+                                            source={{ uri }}
+                                            style={styles.itemImage}
+                                            contentFit="cover"
+                                          />
+                                          {isLastVisible &&
+                                          extraImageCount > 0 ? (
+                                            <View
+                                              style={styles.itemImageOverlay}
+                                            >
+                                              <Text
+                                                style={
+                                                  styles.itemImageOverlayText
+                                                }
+                                              >
+                                                +{extraImageCount}
+                                              </Text>
+                                            </View>
+                                          ) : null}
+                                        </Pressable>
+                                      );
+                                    })}
+                                  </View>
+                                ))}
+                            </View>
+                          ) : null;
+                        })()}
+
+                        {item.media?.kind === "video" ? (
+                          <Pressable
+                            onPress={() => {
+                              const videoUri = getItemVideoUri(
+                                item,
+                                selectedEventPath,
+                              );
+                              if (videoUri)
+                                openPreviewVideo(videoUri, itemCardLabel(item));
+                            }}
+                            style={({ pressed }) => [
+                              styles.videoPreview,
+                              {
+                                borderColor: palette.border,
+                                backgroundColor: palette.cardMuted,
+                              },
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <View style={styles.videoPreviewThumbWrap}>
+                              {(() => {
+                                const videoUri = getItemVideoUri(
+                                  item,
+                                  selectedEventPath,
+                                );
+                                const thumbnailUri = videoUri
+                                  ? videoThumbnailUris[videoUri]
+                                  : undefined;
+                                return thumbnailUri ? (
+                                  <Image
+                                    source={{ uri: thumbnailUri }}
+                                    style={styles.videoPreviewThumb}
+                                    contentFit="cover"
+                                  />
+                                ) : (
+                                  <View
+                                    style={[
+                                      styles.videoPreviewThumb,
+                                      styles.videoPreviewThumbFallback,
+                                    ]}
+                                  >
+                                    <MaterialIcons
+                                      name="movie"
+                                      size={36}
+                                      color={palette.textMuted}
+                                    />
+                                  </View>
+                                );
+                              })()}
+                              <View style={styles.videoPlayOverlay}>
+                                <MaterialIcons
+                                  name="play-circle-filled"
+                                  size={48}
+                                  color="#ffffff"
+                                />
+                              </View>
+                            </View>
+                            <View style={styles.videoBadgeRow}>
+                              <MaterialIcons
+                                name="videocam"
+                                size={18}
+                                color={palette.textMuted}
+                              />
+                              <Text
+                                style={[
+                                  styles.videoBadgeText,
+                                  { color: palette.textMuted },
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {item.media?.fileName}
+                              </Text>
+                            </View>
+                          </Pressable>
+                        ) : null}
+                      </>
+                    )}
                   </View>
                 )}
-                ListEmptyComponent={<View style={styles.emptyWrap}><Text style={[styles.emptyText, { color: palette.textMuted }]}>No items yet. Press + to add one.</Text></View>}
+                ListEmptyComponent={
+                  <View style={styles.emptyWrap}>
+                    <Text
+                      style={[styles.emptyText, { color: palette.textMuted }]}
+                    >
+                      No items in this group yet. Press + to add one.
+                    </Text>
+                  </View>
+                }
               />
             ) : null}
           </View>
         )}
       </View>
 
-      <Modal visible={showCreateModal} transparent animationType="fade" onRequestClose={closeCreateModal}>
-        <View style={[styles.modalOverlay, { backgroundColor: palette.overlay }]}>
-          <View style={[styles.modalCard, { backgroundColor: palette.card, borderColor: palette.border }]}>
-            <Text style={[styles.modalTitle, { color: palette.text }]}> 
+      <Modal
+        visible={showCreateModal}
+        transparent
+        animationType="fade"
+        onRequestClose={closeCreateModal}
+      >
+        <View
+          style={[styles.modalOverlay, { backgroundColor: palette.overlay }]}
+        >
+          <View
+            style={[
+              styles.modalCard,
+              { backgroundColor: palette.card, borderColor: palette.border },
+            ]}
+          >
+            <Text style={[styles.modalTitle, { color: palette.text }]}>
               {screen === "home"
                 ? profileBeingEdited
                   ? "Edit Profile"
@@ -563,64 +1785,422 @@ export default function HomeScreen() {
 
             {screen === "home" ? (
               <>
-                <TextInput value={newProfileName} onChangeText={setNewProfileName} placeholder="Profile name (e.g. Trips)" placeholderTextColor={palette.textMuted} style={[styles.input, { borderColor: palette.border, color: palette.text, backgroundColor: palette.cardMuted }]} />
+                <TextInput
+                  value={newProfileName}
+                  onChangeText={setNewProfileName}
+                  placeholder="Profile name (e.g. Trips)"
+                  placeholderTextColor={palette.textMuted}
+                  style={[
+                    styles.input,
+                    {
+                      borderColor: palette.border,
+                      color: palette.text,
+                      backgroundColor: palette.cardMuted,
+                    },
+                  ]}
+                />
 
-                <Pressable onPress={() => setShowImportPlaceholder((value) => !value)} style={({ pressed }) => [styles.modalButton, { borderColor: palette.border, backgroundColor: palette.cardMuted, alignSelf: "flex-start" }, pressed && styles.pressed]}>
-                  <Text style={{ color: palette.text, fontWeight: "700" }}>Import Profile</Text>
+                <Pressable
+                  onPress={() => setShowImportPlaceholder((value) => !value)}
+                  style={({ pressed }) => [
+                    styles.modalButton,
+                    {
+                      borderColor: palette.border,
+                      backgroundColor: palette.cardMuted,
+                      alignSelf: "flex-start",
+                    },
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={{ color: palette.text, fontWeight: "700" }}>
+                    Import Profile
+                  </Text>
                 </Pressable>
 
-                {showImportPlaceholder ? <Text style={[styles.helperText, { color: palette.textMuted }]}>Import is not implemented yet.</Text> : null}
+                {showImportPlaceholder ? (
+                  <Text
+                    style={[styles.helperText, { color: palette.textMuted }]}
+                  >
+                    Import is not implemented yet.
+                  </Text>
+                ) : null}
               </>
             ) : null}
 
             {screen === "profile" ? (
               <>
-                <TextInput value={newEventName} onChangeText={setNewEventName} placeholder="Event name (e.g. Norway)" placeholderTextColor={palette.textMuted} style={[styles.input, { borderColor: palette.border, color: palette.text, backgroundColor: palette.cardMuted }]} />
-                <TextInput value={newEventDate} onChangeText={setNewEventDate} placeholder="Date YYYY-MM-DD" placeholderTextColor={palette.textMuted} style={[styles.input, { borderColor: palette.border, color: palette.text, backgroundColor: palette.cardMuted }]} />
+                <TextInput
+                  value={newEventName}
+                  onChangeText={setNewEventName}
+                  placeholder="Event name (e.g. Norway)"
+                  placeholderTextColor={palette.textMuted}
+                  style={[
+                    styles.input,
+                    {
+                      borderColor: palette.border,
+                      color: palette.text,
+                      backgroundColor: palette.cardMuted,
+                    },
+                  ]}
+                />
+                <TextInput
+                  value={newEventDate}
+                  onChangeText={setNewEventDate}
+                  placeholder="Date YYYY-MM-DD"
+                  placeholderTextColor={palette.textMuted}
+                  style={[
+                    styles.input,
+                    {
+                      borderColor: palette.border,
+                      color: palette.text,
+                      backgroundColor: palette.cardMuted,
+                    },
+                  ]}
+                />
               </>
             ) : null}
 
             {screen === "event" && !itemBeingEdited ? (
               <>
-                <TextInput value={newItemTitle} onChangeText={setNewItemTitle} placeholder="Optional item title" placeholderTextColor={palette.textMuted} style={[styles.input, { borderColor: palette.border, color: palette.text, backgroundColor: palette.cardMuted }]} />
+                <TextInput
+                  value={newItemTitle}
+                  onChangeText={setNewItemTitle}
+                  placeholder="Optional item title"
+                  placeholderTextColor={palette.textMuted}
+                  style={[
+                    styles.input,
+                    {
+                      borderColor: palette.border,
+                      color: palette.text,
+                      backgroundColor: palette.cardMuted,
+                    },
+                  ]}
+                />
 
                 <View style={styles.itemTypeRow}>
-                  {(["text", "image", "video"] as ItemCreateKind[]).map((kind) => (
-                    <Pressable key={kind} onPress={() => setNewItemKind(kind)} style={({ pressed }) => [styles.itemTypeButton, { borderColor: palette.border, backgroundColor: newItemKind === kind ? palette.accent : palette.cardMuted }, pressed && styles.pressed]}>
-                      <Text style={{ color: newItemKind === kind ? "#03221d" : palette.text, fontWeight: "700", textTransform: "capitalize" }}>{kind}</Text>
+                  {(
+                    ["text", "image", "video", "group"] as ItemCreateKind[]
+                  ).map((kind) => (
+                    <Pressable
+                      key={kind}
+                      onPress={() => setNewItemKind(kind)}
+                      style={({ pressed }) => [
+                        styles.itemTypeButton,
+                        {
+                          borderColor: palette.border,
+                          backgroundColor:
+                            newItemKind === kind
+                              ? palette.accent
+                              : palette.cardMuted,
+                        },
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Text
+                        style={{
+                          color:
+                            newItemKind === kind ? "#03221d" : palette.text,
+                          fontWeight: "700",
+                          textTransform: "capitalize",
+                        }}
+                      >
+                        {kind}
+                      </Text>
                     </Pressable>
                   ))}
                 </View>
 
                 {newItemKind === "text" ? (
-                  <TextInput value={newItemText} onChangeText={setNewItemText} placeholder="Text content" placeholderTextColor={palette.textMuted} multiline style={[styles.input, styles.multilineInput, { borderColor: palette.border, color: palette.text, backgroundColor: palette.cardMuted }]} />
+                  <TextInput
+                    value={newItemText}
+                    onChangeText={setNewItemText}
+                    placeholder="Text content"
+                    placeholderTextColor={palette.textMuted}
+                    multiline
+                    style={[
+                      styles.input,
+                      styles.multilineInput,
+                      {
+                        borderColor: palette.border,
+                        color: palette.text,
+                        backgroundColor: palette.cardMuted,
+                      },
+                    ]}
+                  />
+                ) : newItemKind === "group" ? (
+                  <Text
+                    style={[styles.helperText, { color: palette.textMuted }]}
+                  >
+                    Create a folder-like group here. You can move items into it
+                    later.
+                  </Text>
                 ) : (
-                  <Text style={[styles.helperText, { color: palette.textMuted }]}>Press save to pick a {newItemKind} from your gallery.</Text>
+                  <Text
+                    style={[styles.helperText, { color: palette.textMuted }]}
+                  >
+                    Press save to pick a {newItemKind} from your gallery.
+                  </Text>
                 )}
 
-                <TextInput value={newItemComment} onChangeText={setNewItemComment} placeholder="Optional comment" placeholderTextColor={palette.textMuted} style={[styles.input, { borderColor: palette.border, color: palette.text, backgroundColor: palette.cardMuted }]} />
+                <TextInput
+                  value={newItemComment}
+                  onChangeText={setNewItemComment}
+                  placeholder="Optional comment"
+                  placeholderTextColor={palette.textMuted}
+                  style={[
+                    styles.input,
+                    {
+                      borderColor: palette.border,
+                      color: palette.text,
+                      backgroundColor: palette.cardMuted,
+                    },
+                  ]}
+                />
               </>
             ) : null}
 
             {screen === "event" && itemBeingEdited ? (
               <>
-                <TextInput value={newItemTitle} onChangeText={setNewItemTitle} placeholder="Optional item title" placeholderTextColor={palette.textMuted} style={[styles.input, { borderColor: palette.border, color: palette.text, backgroundColor: palette.cardMuted }]} />
+                <TextInput
+                  value={newItemTitle}
+                  onChangeText={setNewItemTitle}
+                  placeholder="Optional item title"
+                  placeholderTextColor={palette.textMuted}
+                  style={[
+                    styles.input,
+                    {
+                      borderColor: palette.border,
+                      color: palette.text,
+                      backgroundColor: palette.cardMuted,
+                    },
+                  ]}
+                />
 
                 {itemBeingEdited.kind === "text" ? (
-                  <TextInput value={newItemText} onChangeText={setNewItemText} placeholder="Text content" placeholderTextColor={palette.textMuted} multiline style={[styles.input, styles.multilineInput, { borderColor: palette.border, color: palette.text, backgroundColor: palette.cardMuted }]} />
+                  <TextInput
+                    value={newItemText}
+                    onChangeText={setNewItemText}
+                    placeholder="Text content"
+                    placeholderTextColor={palette.textMuted}
+                    multiline
+                    style={[
+                      styles.input,
+                      styles.multilineInput,
+                      {
+                        borderColor: palette.border,
+                        color: palette.text,
+                        backgroundColor: palette.cardMuted,
+                      },
+                    ]}
+                  />
                 ) : (
-                  <Text style={[styles.helperText, { color: palette.textMuted }]}>You can update the title and comment for this item.</Text>
+                  <Text
+                    style={[styles.helperText, { color: palette.textMuted }]}
+                  >
+                    You can update the title and comment for this item.
+                  </Text>
                 )}
 
-                <TextInput value={newItemComment} onChangeText={setNewItemComment} placeholder="Optional comment" placeholderTextColor={palette.textMuted} style={[styles.input, { borderColor: palette.border, color: palette.text, backgroundColor: palette.cardMuted }]} />
+                <TextInput
+                  value={newItemComment}
+                  onChangeText={setNewItemComment}
+                  placeholder="Optional comment"
+                  placeholderTextColor={palette.textMuted}
+                  style={[
+                    styles.input,
+                    {
+                      borderColor: palette.border,
+                      color: palette.text,
+                      backgroundColor: palette.cardMuted,
+                    },
+                  ]}
+                />
+              </>
+            ) : null}
+
+            {screen === "group" && !itemBeingEdited ? (
+              <>
+                <TextInput
+                  value={newItemTitle}
+                  onChangeText={setNewItemTitle}
+                  placeholder="Optional item title"
+                  placeholderTextColor={palette.textMuted}
+                  style={[
+                    styles.input,
+                    {
+                      borderColor: palette.border,
+                      color: palette.text,
+                      backgroundColor: palette.cardMuted,
+                    },
+                  ]}
+                />
+
+                <View style={styles.itemTypeRow}>
+                  {(
+                    ["text", "image", "video", "group"] as ItemCreateKind[]
+                  ).map((kind) => (
+                    <Pressable
+                      key={kind}
+                      onPress={() => setNewItemKind(kind)}
+                      style={({ pressed }) => [
+                        styles.itemTypeButton,
+                        {
+                          borderColor: palette.border,
+                          backgroundColor:
+                            newItemKind === kind
+                              ? palette.accent
+                              : palette.cardMuted,
+                        },
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Text
+                        style={{
+                          color:
+                            newItemKind === kind ? "#03221d" : palette.text,
+                          fontWeight: "700",
+                          textTransform: "capitalize",
+                        }}
+                      >
+                        {kind}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                {newItemKind === "text" ? (
+                  <TextInput
+                    value={newItemText}
+                    onChangeText={setNewItemText}
+                    placeholder="Text content"
+                    placeholderTextColor={palette.textMuted}
+                    multiline
+                    style={[
+                      styles.input,
+                      styles.multilineInput,
+                      {
+                        borderColor: palette.border,
+                        color: palette.text,
+                        backgroundColor: palette.cardMuted,
+                      },
+                    ]}
+                  />
+                ) : newItemKind === "group" ? (
+                  <Text
+                    style={[styles.helperText, { color: palette.textMuted }]}
+                  >
+                    Create a folder-like group here. You can move items into it
+                    later.
+                  </Text>
+                ) : (
+                  <Text
+                    style={[styles.helperText, { color: palette.textMuted }]}
+                  >
+                    Press save to pick a {newItemKind} from your gallery.
+                  </Text>
+                )}
+
+                <TextInput
+                  value={newItemComment}
+                  onChangeText={setNewItemComment}
+                  placeholder="Optional comment"
+                  placeholderTextColor={palette.textMuted}
+                  style={[
+                    styles.input,
+                    {
+                      borderColor: palette.border,
+                      color: palette.text,
+                      backgroundColor: palette.cardMuted,
+                    },
+                  ]}
+                />
+              </>
+            ) : null}
+
+            {screen === "group" && itemBeingEdited ? (
+              <>
+                <TextInput
+                  value={newItemTitle}
+                  onChangeText={setNewItemTitle}
+                  placeholder="Optional item title"
+                  placeholderTextColor={palette.textMuted}
+                  style={[
+                    styles.input,
+                    {
+                      borderColor: palette.border,
+                      color: palette.text,
+                      backgroundColor: palette.cardMuted,
+                    },
+                  ]}
+                />
+
+                {itemBeingEdited.kind === "text" ? (
+                  <TextInput
+                    value={newItemText}
+                    onChangeText={setNewItemText}
+                    placeholder="Text content"
+                    placeholderTextColor={palette.textMuted}
+                    multiline
+                    style={[
+                      styles.input,
+                      styles.multilineInput,
+                      {
+                        borderColor: palette.border,
+                        color: palette.text,
+                        backgroundColor: palette.cardMuted,
+                      },
+                    ]}
+                  />
+                ) : (
+                  <Text
+                    style={[styles.helperText, { color: palette.textMuted }]}
+                  >
+                    You can update the title and comment for this item.
+                  </Text>
+                )}
+
+                <TextInput
+                  value={newItemComment}
+                  onChangeText={setNewItemComment}
+                  placeholder="Optional comment"
+                  placeholderTextColor={palette.textMuted}
+                  style={[
+                    styles.input,
+                    {
+                      borderColor: palette.border,
+                      color: palette.text,
+                      backgroundColor: palette.cardMuted,
+                    },
+                  ]}
+                />
               </>
             ) : null}
 
             <View style={styles.modalActions}>
-              <Pressable onPress={closeCreateModal} style={({ pressed }) => [styles.modalButton, { borderColor: palette.border, backgroundColor: palette.cardMuted }, pressed && styles.pressed]}>
+              <Pressable
+                onPress={closeCreateModal}
+                style={({ pressed }) => [
+                  styles.modalButton,
+                  {
+                    borderColor: palette.border,
+                    backgroundColor: palette.cardMuted,
+                  },
+                  pressed && styles.pressed,
+                ]}
+              >
                 <Text style={{ color: palette.text }}>Cancel</Text>
               </Pressable>
-              <Pressable onPress={submitCreate} style={({ pressed }) => [styles.modalButton, { borderColor: palette.accent, backgroundColor: palette.accent }, pressed && styles.pressed]}>
+              <Pressable
+                onPress={submitCreate}
+                style={({ pressed }) => [
+                  styles.modalButton,
+                  {
+                    borderColor: palette.accent,
+                    backgroundColor: palette.accent,
+                  },
+                  pressed && styles.pressed,
+                ]}
+              >
                 <Text style={{ color: "#03221d", fontWeight: "800" }}>
                   {screen === "home" && profileBeingEdited
                     ? "Update"
@@ -636,37 +2216,483 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      <Modal visible={showDeleteModal} transparent animationType="fade" onRequestClose={closeDeleteModal}>
-        <View style={[styles.modalOverlay, { backgroundColor: palette.overlay }]}>
-          <View style={[styles.modalCard, { backgroundColor: palette.card, borderColor: palette.border }]}>
+      <Modal
+        visible={showMoveModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowMoveModal(false)}
+      >
+        <View
+          style={[styles.modalOverlay, { backgroundColor: palette.overlay }]}
+        >
+          <View
+            style={[
+              styles.modalCard,
+              { backgroundColor: palette.card, borderColor: palette.border },
+            ]}
+          >
+            <Text style={[styles.modalTitle, { color: palette.text }]}>
+              Move Item
+            </Text>
+            <Text style={[styles.helperText, { color: palette.textMuted }]}>
+              Choose destination container
+            </Text>
+            <View style={{ maxHeight: 320, marginTop: 8 }}>
+              {moveTargets.map((t, idx) => {
+                const disabled = arraysEqual(t.path, selectedGroupPath || []);
+                return (
+                  <Pressable
+                    key={`move-target-${idx}`}
+                    onPress={() => setSelectedMovePath(t.path)}
+                    style={({ pressed }) => [
+                      {
+                        paddingVertical: 12,
+                        paddingHorizontal: 12,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        marginBottom: 8,
+                        borderColor: palette.border,
+                        backgroundColor:
+                          selectedMovePath &&
+                          arraysEqual(selectedMovePath, t.path)
+                            ? palette.cardMuted
+                            : palette.card,
+                        opacity: disabled ? 0.45 : 1,
+                      },
+                      pressed && styles.pressed,
+                    ]}
+                    disabled={disabled}
+                  >
+                    <Text style={{ color: palette.text }}>{t.title}</Text>
+                    <Text
+                      style={{
+                        color: palette.textMuted,
+                        fontSize: 12,
+                        marginTop: 4,
+                      }}
+                    >
+                      {t.path.length === 0 ? "Event root" : t.pathDisplay}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <View style={styles.modalActions}>
+              <Pressable
+                onPress={() => {
+                  setShowMoveModal(false);
+                  setMovingItem(null);
+                  setSelectedMovePath(null);
+                }}
+                style={({ pressed }) => [
+                  styles.modalButton,
+                  {
+                    borderColor: palette.border,
+                    backgroundColor: palette.cardMuted,
+                  },
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={{ color: palette.text }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={submitMove}
+                disabled={!movingItem}
+                style={({ pressed }) => [
+                  styles.modalButton,
+                  {
+                    borderColor: palette.accent,
+                    backgroundColor: palette.accent,
+                    opacity: movingItem ? 1 : 0.5,
+                  },
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={{ color: "#002425", fontWeight: "800" }}>
+                  Move
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={previewVideoUri !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closePreviewVideo}
+      >
+        <View
+          style={[
+            styles.previewOverlay,
+            { backgroundColor: "rgba(2, 6, 12, 0.95)" },
+          ]}
+        >
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={closePreviewVideo}
+          />
+          <View
+            style={[
+              styles.previewFrame,
+              {
+                maxWidth: Math.min(width - 24, 760),
+                height: Math.min(height - 80, 920),
+              },
+            ]}
+          >
+            {previewVideoUri ? (
+              <Video
+                key={previewVideoUri}
+                source={{ uri: previewVideoUri }}
+                style={styles.previewVideoPlayer}
+                resizeMode={ResizeMode.CONTAIN}
+                useNativeControls
+                shouldPlay
+                isLooping={false}
+              />
+            ) : null}
+            {previewVideoTitle ? (
+              <Text style={[styles.previewCounter, { color: palette.text }]}>
+                {previewVideoTitle}
+              </Text>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showDeleteModal}
+        transparent
+        animationType="fade"
+        onRequestClose={closeDeleteModal}
+      >
+        <View
+          style={[styles.modalOverlay, { backgroundColor: palette.overlay }]}
+        >
+          <View
+            style={[
+              styles.modalCard,
+              { backgroundColor: palette.card, borderColor: palette.border },
+            ]}
+          >
             {itemToDelete ? (
               <>
-                <Text style={[styles.modalTitle, { color: palette.text }]}>Delete Item</Text>
-                <Text style={[styles.helperText, { color: palette.textMuted }]}>Delete this item from the event?</Text>
+                <Text style={[styles.modalTitle, { color: palette.text }]}>
+                  Delete Item
+                </Text>
+                <Text style={[styles.helperText, { color: palette.textMuted }]}>
+                  Delete this item from the event?
+                </Text>
                 <View style={styles.modalActions}>
-                  <Pressable onPress={closeDeleteModal} style={({ pressed }) => [styles.modalButton, { borderColor: palette.border, backgroundColor: palette.cardMuted }, pressed && styles.pressed]}>
+                  <Pressable
+                    onPress={closeDeleteModal}
+                    style={({ pressed }) => [
+                      styles.modalButton,
+                      {
+                        borderColor: palette.border,
+                        backgroundColor: palette.cardMuted,
+                      },
+                      pressed && styles.pressed,
+                    ]}
+                  >
                     <Text style={{ color: palette.text }}>Cancel</Text>
                   </Pressable>
-                  <Pressable onPress={submitDeleteItem} style={({ pressed }) => [styles.modalButton, { borderColor: palette.danger, backgroundColor: palette.danger }, pressed && styles.pressed]}>
-                    <Text style={{ color: "#2a0000", fontWeight: "800" }}>Delete</Text>
+                  <Pressable
+                    onPress={submitDeleteItem}
+                    style={({ pressed }) => [
+                      styles.modalButton,
+                      {
+                        borderColor: palette.danger,
+                        backgroundColor: palette.danger,
+                      },
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={{ color: "#2a0000", fontWeight: "800" }}>
+                      Delete
+                    </Text>
                   </Pressable>
                 </View>
               </>
             ) : (
               <>
-                <Text style={[styles.modalTitle, { color: palette.text }]}>{profileToDelete ? "Delete Profile" : "Delete Event"}</Text>
-                <Text style={[styles.helperText, { color: palette.textMuted }]}>{profileToDelete ? `Type ${profileToDelete.name} to confirm deletion.` : eventToDelete ? `Type ${eventToDelete.title} to confirm deletion.` : ""}</Text>
-                <TextInput value={deleteConfirmName} onChangeText={setDeleteConfirmName} placeholder={profileToDelete ? "Enter profile name" : "Enter event title"} placeholderTextColor={palette.textMuted} style={[styles.input, { borderColor: palette.border, color: palette.text, backgroundColor: palette.cardMuted }]} />
+                <Text style={[styles.modalTitle, { color: palette.text }]}>
+                  {profileToDelete ? "Delete Profile" : "Delete Event"}
+                </Text>
+                <Text style={[styles.helperText, { color: palette.textMuted }]}>
+                  {profileToDelete
+                    ? `Type ${profileToDelete.name} to confirm deletion.`
+                    : eventToDelete
+                      ? `Type ${eventToDelete.title} to confirm deletion.`
+                      : ""}
+                </Text>
+                <TextInput
+                  value={deleteConfirmName}
+                  onChangeText={setDeleteConfirmName}
+                  placeholder={
+                    profileToDelete ? "Enter profile name" : "Enter event title"
+                  }
+                  placeholderTextColor={palette.textMuted}
+                  style={[
+                    styles.input,
+                    {
+                      borderColor: palette.border,
+                      color: palette.text,
+                      backgroundColor: palette.cardMuted,
+                    },
+                  ]}
+                />
                 <View style={styles.modalActions}>
-                  <Pressable onPress={closeDeleteModal} style={({ pressed }) => [styles.modalButton, { borderColor: palette.border, backgroundColor: palette.cardMuted }, pressed && styles.pressed]}>
+                  <Pressable
+                    onPress={closeDeleteModal}
+                    style={({ pressed }) => [
+                      styles.modalButton,
+                      {
+                        borderColor: palette.border,
+                        backgroundColor: palette.cardMuted,
+                      },
+                      pressed && styles.pressed,
+                    ]}
+                  >
                     <Text style={{ color: palette.text }}>Cancel</Text>
                   </Pressable>
-                  <Pressable onPress={profileToDelete ? submitDeleteProfile : submitDeleteEvent} disabled={deleteConfirmName.trim() !== (profileToDelete?.name ?? eventToDelete?.title ?? "")} style={({ pressed }) => [styles.modalButton, { borderColor: palette.danger, backgroundColor: palette.danger, opacity: deleteConfirmName.trim() !== (profileToDelete?.name ?? eventToDelete?.title ?? "") ? 0.35 : 1 }, pressed && styles.pressed]}>
-                    <Text style={{ color: "#2a0000", fontWeight: "800" }}>Delete</Text>
+                  <Pressable
+                    onPress={
+                      profileToDelete ? submitDeleteProfile : submitDeleteEvent
+                    }
+                    disabled={
+                      deleteConfirmName.trim() !==
+                      (profileToDelete?.name ?? eventToDelete?.title ?? "")
+                    }
+                    style={({ pressed }) => [
+                      styles.modalButton,
+                      {
+                        borderColor: palette.danger,
+                        backgroundColor: palette.danger,
+                        opacity:
+                          deleteConfirmName.trim() !==
+                          (profileToDelete?.name ?? eventToDelete?.title ?? "")
+                            ? 0.35
+                            : 1,
+                      },
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={{ color: "#2a0000", fontWeight: "800" }}>
+                      Delete
+                    </Text>
                   </Pressable>
                 </View>
               </>
             )}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={previewImageUris !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closePreviewImage}
+      >
+        <View
+          style={[
+            styles.previewOverlay,
+            { backgroundColor: "rgba(2, 6, 12, 0.92)" },
+          ]}
+        >
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={closePreviewImage}
+          />
+          <View
+            style={[
+              styles.previewFrame,
+              {
+                maxWidth: Math.min(width - 24, 760),
+                height: Math.min(height - 80, 920),
+              },
+            ]}
+          >
+            {previewImageUris ? (
+              <>
+                <FlatList
+                  data={previewImageUris}
+                  horizontal
+                  pagingEnabled
+                  showsHorizontalScrollIndicator={false}
+                  ref={previewListRef}
+                  scrollEnabled={!previewZoomed}
+                  initialScrollIndex={previewImageIndex}
+                  keyExtractor={(uri, index) => `${uri}-${index}`}
+                  removeClippedSubviews={false}
+                  windowSize={3}
+                  initialNumToRender={3}
+                  maxToRenderPerBatch={3}
+                  getItemLayout={(_, index) => ({
+                    length: Math.min(width - 48, 760),
+                    offset: Math.min(width - 48, 760) * index,
+                    index,
+                  })}
+                  onMomentumScrollEnd={(event) => {
+                    const pageWidth = Math.min(width - 48, 760);
+                    const nextIndex = Math.round(
+                      event.nativeEvent.contentOffset.x / pageWidth,
+                    );
+                    setPreviewImageIndex(nextIndex);
+                  }}
+                  renderItem={({ item: uri, index }) => (
+                    <View
+                      style={[
+                        styles.previewSlide,
+                        {
+                          width: Math.min(width - 48, 760),
+                          height: Math.min(height - 80, 920),
+                        },
+                      ]}
+                    >
+                      <ZoomablePreviewImage
+                        uri={uri}
+                        onZoomChange={(zoomed) => {
+                          if (index === previewImageIndex)
+                            setPreviewZoomed(zoomed);
+                        }}
+                        onTapClose={closePreviewImage}
+                        slideWidth={Math.min(width - 48, 760)}
+                        slideHeight={Math.min(height - 80, 920)}
+                      />
+                    </View>
+                  )}
+                />
+                <Text style={[styles.previewCounter, { color: palette.text }]}>
+                  {previewImageIndex + 1} / {previewImageUris.length}
+                </Text>
+              </>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        visible={showLocationPicker}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowLocationPicker(false)}
+      >
+        <View
+          style={[
+            styles.previewOverlay,
+            { backgroundColor: "rgba(2,6,12,0.95)" },
+          ]}
+        >
+          <View style={{ flex: 1, padding: 12 }}>
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                marginBottom: 12,
+              }}
+            >
+              <Text
+                style={{ color: palette.text, fontSize: 18, fontWeight: "800" }}
+              >
+                Select Location
+              </Text>
+              <Pressable onPress={() => setShowLocationPicker(false)}>
+                <MaterialIcons name="close" size={24} color={palette.text} />
+              </Pressable>
+            </View>
+
+            {selectedLocation
+              ? (() => {
+                  const MapComp = mapsModule?.default ?? mapsModule;
+                  const MarkerComp =
+                    mapsModule?.Marker ?? mapsModule?.default?.Marker ?? null;
+
+                  if (MapComp) {
+                    return (
+                      <MapComp
+                        ref={mapRef}
+                        style={{ flex: 1, borderRadius: 12, marginBottom: 12 }}
+                        initialRegion={{
+                          latitude: selectedLocation.latitude,
+                          longitude: selectedLocation.longitude,
+                          latitudeDelta: 0.0922,
+                          longitudeDelta: 0.0421,
+                        }}
+                        onPress={(e: any) => {
+                          const { latitude, longitude } =
+                            e.nativeEvent.coordinate;
+                          setSelectedLocation({
+                            ...selectedLocation,
+                            latitude,
+                            longitude,
+                          });
+                        }}
+                      >
+                        {MarkerComp ? (
+                          <MarkerComp
+                            coordinate={{
+                              latitude: selectedLocation.latitude,
+                              longitude: selectedLocation.longitude,
+                            }}
+                            title="Selected Location"
+                          />
+                        ) : null}
+                      </MapComp>
+                    );
+                  }
+
+                  return (
+                    <View
+                      style={{
+                        flex: 1,
+                        borderRadius: 12,
+                        marginBottom: 12,
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <Text style={{ color: palette.text }}>
+                        Map is unavailable in this environment
+                      </Text>
+                    </View>
+                  );
+                })()
+              : null}
+
+            <View style={styles.modalActions}>
+              <Pressable
+                onPress={() => setShowLocationPicker(false)}
+                style={({ pressed }) => [
+                  styles.modalButton,
+                  {
+                    borderColor: palette.border,
+                    backgroundColor: palette.cardMuted,
+                  },
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={{ color: palette.text }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirmLocationSelection}
+                style={({ pressed }) => [
+                  styles.modalButton,
+                  {
+                    borderColor: palette.accent,
+                    backgroundColor: palette.accent,
+                  },
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={{ color: "#03221d", fontWeight: "800" }}>
+                  Use This Location
+                </Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </Modal>
@@ -690,6 +2716,17 @@ function describeItemKind(kind: JournalItem["kind"]) {
   return "Media Item";
 }
 
+function arraysEqual(
+  a: string[] | undefined | null,
+  b: string[] | undefined | null,
+) {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 function isValidLocalDate(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
@@ -699,49 +2736,406 @@ function todayIsoDate() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
+type ZoomablePreviewImageProps = {
+  uri: string;
+  slideWidth: number;
+  slideHeight: number;
+  onTapClose: () => void;
+  onZoomChange?: (zoomed: boolean) => void;
+};
+
+function ZoomablePreviewImage({
+  uri,
+  slideWidth,
+  slideHeight,
+  onTapClose,
+  onZoomChange,
+}: ZoomablePreviewImageProps) {
+  const imageZoomRef = useRef<any>(null);
+  const [zoomed, setZoomed] = useState(false);
+
+  const handleMove = (position: any) => {
+    // react-native-image-pan-zoom provides a scale in the move payload
+    const scale = (position && (position.scale ?? position.scaleX ?? 1)) || 1;
+    const isZoom = scale > 1.02;
+    if (isZoom !== zoomed) {
+      setZoomed(isZoom);
+      onZoomChange?.(isZoom);
+    }
+  };
+
+  const handleClick = () => {
+    if (zoomed) {
+      imageZoomRef.current?.resetScale?.();
+      setZoomed(false);
+      onZoomChange?.(false);
+      return;
+    }
+
+    onTapClose();
+  };
+
+  const handleDoubleClick = () => {
+    if (zoomed) {
+      return;
+    }
+
+    imageZoomRef.current?.centerOn?.({
+      x: slideWidth / 2,
+      y: slideHeight / 2,
+      scale: 2,
+      duration: 180,
+    });
+    setZoomed(true);
+    onZoomChange?.(true);
+  };
+
+  return (
+    <ImageZoom
+      ref={imageZoomRef}
+      cropWidth={slideWidth}
+      cropHeight={slideHeight}
+      imageWidth={slideWidth}
+      imageHeight={slideHeight}
+      minScale={1}
+      maxScale={4}
+      clickDistance={6}
+      pinchToZoom={true}
+      panToMove={zoomed}
+      enableCenterFocus={false}
+      onStartShouldSetPanResponder={() => zoomed}
+      onMoveShouldSetPanResponder={() => zoomed}
+      onMove={handleMove}
+      onClick={handleClick}
+      onDoubleClick={handleDoubleClick}
+    >
+      <Image
+        source={{ uri }}
+        style={{ width: slideWidth, height: slideHeight }}
+        contentFit="contain"
+      />
+    </ImageZoom>
+  );
+}
+
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
-  topGlow: { position: "absolute", width: 320, height: 320, borderRadius: 160, top: -170, left: -90, opacity: 0.18 },
-  header: { minHeight: 80, borderBottomWidth: 1, flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, zIndex: 30 },
+  topGlow: {
+    position: "absolute",
+    width: 320,
+    height: 320,
+    borderRadius: 160,
+    top: -170,
+    left: -90,
+    opacity: 0.18,
+  },
+  header: {
+    minHeight: 80,
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    zIndex: 30,
+  },
   headerSide: { width: 56, alignItems: "center", justifyContent: "center" },
-  headerCenter: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 8 },
+  headerCenter: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
   headerTitle: { fontSize: 20, fontWeight: "800" },
   headerTitleEvent: { fontSize: 20, fontWeight: "800" },
   headerSubtitle: { fontSize: 12, fontWeight: "500", marginBottom: 2 },
-  iconButton: { width: 40, height: 40, borderRadius: 12, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  iconButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   body: { flex: 1, alignItems: "center" },
-  exportToast: { position: "absolute", top: 110, left: 12, right: 12, padding: 12, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center", zIndex: 50, backgroundColor: "rgba(27,35,50,0.96)" },
+  exportToast: {
+    position: "absolute",
+    top: 110,
+    left: 12,
+    right: 12,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 50,
+    backgroundColor: "rgba(27,35,50,0.96)",
+  },
   listContent: { paddingTop: 16, paddingBottom: 32, gap: 12 },
-  profileCard: { borderRadius: 18, borderWidth: 1, flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 96, padding: 12, gap: 12 },
-  trashButton: { width: 44, height: 44, borderRadius: 12, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  profileMain: { flex: 1, alignItems: "flex-start", justifyContent: "center", paddingRight: 8 },
+  profileCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    minHeight: 96,
+    padding: 12,
+    gap: 12,
+  },
+  trashButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  profileMain: {
+    flex: 1,
+    alignItems: "flex-start",
+    justifyContent: "center",
+    paddingRight: 8,
+  },
   profileName: { fontSize: 24, fontWeight: "800", textAlign: "left" },
-  profileDate: { marginTop: 4, textAlign: "left", fontSize: 12, fontWeight: "500" },
-  eventCard: { borderRadius: 18, borderWidth: 1, flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 98, paddingHorizontal: 16, paddingVertical: 14, gap: 12 },
+  profileDate: {
+    marginTop: 4,
+    textAlign: "left",
+    fontSize: 12,
+    fontWeight: "500",
+  },
+  eventCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    minHeight: 98,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    gap: 12,
+  },
   eventMain: { flex: 1, alignItems: "flex-start", justifyContent: "center" },
   eventDate: { fontSize: 12, fontWeight: "500", textAlign: "left" },
-  eventTitle: { marginTop: 2, fontSize: 22, fontWeight: "800", textAlign: "left" },
+  eventTitle: {
+    marginTop: 2,
+    fontSize: 22,
+    fontWeight: "800",
+    textAlign: "left",
+  },
   eventMeta: { marginTop: 6, fontSize: 12, textAlign: "left" },
-  itemCard: { borderRadius: 16, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 14, gap: 10 },
-  itemTopRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  itemCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 10,
+  },
+  itemTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
   itemTitle: { fontSize: 15, fontWeight: "700" },
   itemBody: { fontSize: 16, lineHeight: 23 },
   itemComment: { fontSize: 13, lineHeight: 18, fontStyle: "italic" },
-  itemImage: { width: "100%", height: 180, borderRadius: 10 },
-  videoBadge: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 8, gap: 8, flexDirection: "row", alignItems: "center" },
+  itemImageGrid: { marginTop: 10, overflow: "hidden", borderRadius: 12 },
+  itemImageGridSingle: { minHeight: 180 },
+  itemImageGridMulti: {
+    backgroundColor: "#0c111a",
+  },
+  itemImageRow: {
+    flexDirection: "row",
+    gap: 2,
+  },
+  itemImageCell: {
+    flex: 1,
+    minHeight: 180,
+    position: "relative",
+    overflow: "hidden",
+  },
+  itemImageCellSingle: { height: 180, minHeight: 180 },
+  itemImageCellMulti: {
+    flex: 1,
+    aspectRatio: 1,
+    minHeight: 120,
+  },
+  itemImage: { width: "100%", height: "100%", minHeight: 180 },
+  itemImageOverlay: {
+    position: "absolute",
+    right: 10,
+    bottom: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(2, 6, 12, 0.72)",
+  },
+  itemImageOverlayText: { color: "#ffffff", fontWeight: "800", fontSize: 13 },
+  groupCard: {
+    marginTop: 10,
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 14,
+    gap: 12,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  videoPreview: {
+    marginTop: 10,
+    borderWidth: 1,
+    borderRadius: 16,
+    overflow: "hidden",
+  },
+  videoPreviewThumbWrap: {
+    position: "relative",
+    width: "100%",
+    height: 180,
+    backgroundColor: "#0c111a",
+  },
+  videoPreviewThumb: {
+    width: "100%",
+    height: "100%",
+  },
+  videoPreviewThumbFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoPlayOverlay: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(2, 6, 12, 0.18)",
+  },
+  videoBadgeRow: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 8,
+    flexDirection: "row",
+    alignItems: "center",
+  },
   videoBadgeText: { flex: 1, fontSize: 13 },
   emptyWrap: { paddingTop: 36, paddingHorizontal: 6 },
   emptyText: { fontSize: 15, textAlign: "center" },
-  modalOverlay: { flex: 1, alignItems: "center", justifyContent: "center", padding: 16 },
-  modalCard: { width: "100%", maxWidth: 460, borderWidth: 1, borderRadius: 18, padding: 16, gap: 12 },
+  modalOverlay: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 460,
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: 16,
+    gap: 12,
+  },
   modalTitle: { fontSize: 20, fontWeight: "800" },
   helperText: { fontSize: 13, lineHeight: 18 },
-  input: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
+  previewOverlay: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+  },
+  previewFrame: {
+    width: "100%",
+    borderRadius: 18,
+    overflow: "hidden",
+    backgroundColor: "#05080f",
+  },
+  previewSlide: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  previewImageWrap: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  previewImage: { width: "100%", height: "100%", minHeight: 280 },
+  previewVideoPlayer: {
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#000000",
+  },
+  previewCounter: {
+    position: "absolute",
+    bottom: 12,
+    alignSelf: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(2, 6, 12, 0.72)",
+    overflow: "hidden",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  input: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+  },
   multilineInput: { minHeight: 110, textAlignVertical: "top" },
   itemTypeRow: { flexDirection: "row", gap: 8 },
-  itemTypeButton: { flex: 1, borderWidth: 1, borderRadius: 10, minHeight: 38, alignItems: "center", justifyContent: "center" },
+  itemTypeButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 10,
+    minHeight: 38,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   profileActions: { flexDirection: "row", gap: 8, alignItems: "center" },
-  modalActions: { marginTop: 4, flexDirection: "row", justifyContent: "flex-end", gap: 8 },
-  modalButton: { minWidth: 92, borderRadius: 10, borderWidth: 1, minHeight: 38, alignItems: "center", justifyContent: "center", paddingHorizontal: 14 },
+  modalActions: {
+    marginTop: 4,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8,
+  },
+  modalButton: {
+    minWidth: 92,
+    borderRadius: 10,
+    borderWidth: 1,
+    minHeight: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
   pressed: { opacity: 0.82, transform: [{ scale: 0.985 }] },
 });
+
+function getItemImageUris(item: JournalItem, selectedEventPath: string | null) {
+  if (!selectedEventPath) {
+    return [];
+  }
+
+  if (item.mediaFiles?.length) {
+    return item.mediaFiles
+      .filter((media) => media.kind === "image")
+      .map((media) => `${selectedEventPath}/${media.fileName}`);
+  }
+
+  if (item.media?.kind === "image") {
+    return [`${selectedEventPath}/${item.media.fileName}`];
+  }
+
+  return [];
+}
+
+function getItemVideoUri(item: JournalItem, selectedEventPath: string | null) {
+  if (!selectedEventPath) {
+    return null;
+  }
+
+  if (item.media?.kind === "video") {
+    return `${selectedEventPath}/${item.media.fileName}`;
+  }
+
+  return null;
+}

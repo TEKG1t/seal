@@ -5,7 +5,12 @@ const PROFILE_MANIFEST_NAME = "profile.json";
 const EVENT_MANIFEST_NAME = "Items.json";
 
 export type MediaKind = "image" | "video";
-export type JournalItemKind = "text" | "media" | "media-with-comment";
+export type JournalItemKind =
+  | "text"
+  | "media"
+  | "media-with-comment"
+  | "group"
+  | "location";
 
 export type JournalProfile = {
   id: string;
@@ -33,6 +38,15 @@ export type JournalMediaRef = {
   mimeType?: string;
 };
 
+export type LocationData = {
+  latitude: number;
+  longitude: number;
+  zoom?: number;
+  address?: string;
+  title?: string;
+  comment?: string;
+};
+
 export type JournalItem = {
   id: string;
   kind: JournalItemKind;
@@ -43,6 +57,9 @@ export type JournalItem = {
   text?: string;
   comment?: string;
   media?: JournalMediaRef;
+  mediaFiles?: JournalMediaRef[];
+  groupItems?: JournalItem[];
+  location?: LocationData;
 };
 
 type JournalEventDocument = JournalEvent & {
@@ -65,7 +82,8 @@ export type AddTextItemInput = {
 };
 
 export type AddMediaItemInput = {
-  sourceUri: string;
+  sourceUri?: string;
+  sourceUris?: string[];
   kind: MediaKind;
   mimeType?: string;
   title?: string;
@@ -652,14 +670,41 @@ export async function listEvents(profileName: string) {
   });
 }
 
-export async function listItems(profileName: string, eventId: string) {
+function getContainerItemsRef(
+  manifest: JournalEventDocument,
+  containerPath?: string[],
+) {
+  if (!containerPath || containerPath.length === 0)
+    return { items: manifest.items };
+
+  let refItems: JournalItem[] | undefined = manifest.items;
+  for (const id of containerPath) {
+    const found = refItems?.find(
+      (it) => it.id === id && it.kind === "group",
+    ) as JournalItem | undefined;
+    if (!found) return null;
+    if (!found.groupItems) found.groupItems = [];
+    refItems = found.groupItems;
+  }
+
+  return { items: refItems! } as { items: JournalItem[] };
+}
+
+export async function listItems(
+  profileName: string,
+  eventId: string,
+  containerPath?: string[],
+) {
   const manifest = await readEventManifest(profileName, eventId);
-  return manifest.items.sort((left, right) => left.order - right.order);
+  const ref = getContainerItemsRef(manifest, containerPath);
+  if (!ref) throw new Error("Container path not found.");
+  return ref.items.sort((a, b) => a.order - b.order);
 }
 
 export async function addTextItem(
   profileName: string,
   eventId: string,
+  containerPath: string[] | undefined,
   input: AddTextItemInput,
 ) {
   const manifest = await readEventManifest(profileName, eventId);
@@ -669,11 +714,14 @@ export async function addTextItem(
     throw new Error("Text item content is required.");
   }
 
+  const ref = getContainerItemsRef(manifest, containerPath);
+  if (!ref) throw new Error("Container path not found.");
+
   const now = isoNow();
   const item: JournalItem = {
     id: createId("text"),
     kind: "text",
-    order: manifest.items.length,
+    order: ref.items.length,
     createdAt: now,
     updatedAt: now,
     title: input.title?.trim() || undefined,
@@ -681,7 +729,7 @@ export async function addTextItem(
     comment: input.comment?.trim() || undefined,
   };
 
-  manifest.items.push(item);
+  ref.items.push(item);
   await saveEventManifest(profileName, eventId, manifest);
   return item;
 }
@@ -689,44 +737,83 @@ export async function addTextItem(
 export async function addMediaItem(
   profileName: string,
   eventId: string,
+  containerPath: string[] | undefined,
   input: AddMediaItemInput,
 ) {
   const manifest = await readEventManifest(profileName, eventId);
-  const copiedFileName = await copyMediaIntoEventFolder(
-    profileName,
-    eventId,
-    input.sourceUri,
-    input.kind,
-    input.mimeType,
-  );
-  const now = isoNow();
-  const item: JournalItem = {
-    id: createId(input.kind),
-    kind: input.comment?.trim() ? "media-with-comment" : "media",
-    order: manifest.items.length,
-    createdAt: now,
-    updatedAt: now,
-    title: input.title?.trim() || undefined,
-    comment: input.comment?.trim() || undefined,
-    media: {
-      fileName: copiedFileName,
-      kind: input.kind,
-      mimeType: input.mimeType,
-    },
-  };
+  const ref = getContainerItemsRef(manifest, containerPath);
+  if (!ref) throw new Error("Container path not found.");
 
-  manifest.items.push(item);
+  const created: JournalItem[] = [];
+  const now = isoNow();
+
+  if (input.sourceUris && input.sourceUris.length) {
+    for (const src of input.sourceUris) {
+      const copiedFileName = await copyMediaIntoEventFolder(
+        profileName,
+        eventId,
+        src,
+        input.kind,
+        input.mimeType,
+      );
+      const item: JournalItem = {
+        id: createId(input.kind),
+        kind: input.comment?.trim() ? "media-with-comment" : "media",
+        order: ref.items.length + created.length,
+        createdAt: now,
+        updatedAt: now,
+        title: input.title?.trim() || undefined,
+        comment: input.comment?.trim() || undefined,
+        media: {
+          fileName: copiedFileName,
+          kind: input.kind,
+          mimeType: input.mimeType,
+        },
+      };
+      created.push(item);
+      ref.items.push(item);
+    }
+  } else if (input.sourceUri) {
+    const copiedFileName = await copyMediaIntoEventFolder(
+      profileName,
+      eventId,
+      input.sourceUri,
+      input.kind,
+      input.mimeType,
+    );
+    const item: JournalItem = {
+      id: createId(input.kind),
+      kind: input.comment?.trim() ? "media-with-comment" : "media",
+      order: ref.items.length,
+      createdAt: now,
+      updatedAt: now,
+      title: input.title?.trim() || undefined,
+      comment: input.comment?.trim() || undefined,
+      media: {
+        fileName: copiedFileName,
+        kind: input.kind,
+        mimeType: input.mimeType,
+      },
+    };
+    created.push(item);
+    ref.items.push(item);
+  }
+
   await saveEventManifest(profileName, eventId, manifest);
-  return item;
+  return created[0];
 }
 
 export async function reorderItems(
   profileName: string,
   eventId: string,
   orderedItemIds: string[],
+  containerPath?: string[],
 ) {
   const manifest = await readEventManifest(profileName, eventId);
-  const itemMap = new Map(manifest.items.map((item) => [item.id, item]));
+  const ref = getContainerItemsRef(manifest, containerPath);
+  if (!ref) throw new Error("Container path not found.");
+
+  const itemMap = new Map(ref.items.map((item) => [item.id, item]));
   const reordered: JournalItem[] = [];
 
   for (const itemId of orderedItemIds) {
@@ -737,44 +824,51 @@ export async function reorderItems(
     }
   }
 
-  for (const item of manifest.items) {
+  for (const item of ref.items) {
     if (itemMap.has(item.id)) {
       reordered.push(item);
     }
   }
 
   const now = isoNow();
-  manifest.items = reordered.map((item, index) => ({
-    ...item,
-    order: index,
-    updatedAt: now,
-  }));
+  ref.items.splice(
+    0,
+    ref.items.length,
+    ...reordered.map((item, index) => ({
+      ...item,
+      order: index,
+      updatedAt: now,
+    })),
+  );
+
   manifest.updatedAt = now;
   manifest.itemCount = manifest.items.length;
 
   await saveEventManifest(profileName, eventId, manifest);
-  return manifest.items;
+  return ref.items;
 }
 
 export async function deleteItem(
   profileName: string,
   eventId: string,
   itemId: string,
+  containerPath?: string[],
 ) {
   const manifest = await readEventManifest(profileName, eventId);
-  const item = manifest.items.find((entry) => entry.id === itemId);
+  const ref = getContainerItemsRef(manifest, containerPath);
+  if (!ref) throw new Error("Container path not found.");
 
-  if (!item) {
-    return manifest.items;
-  }
+  const item = ref.items.find((entry) => entry.id === itemId);
+  if (!item) return ref.items;
 
-  manifest.items = manifest.items
-    .filter((entry) => entry.id !== itemId)
-    .map((entry, index) => ({
-      ...entry,
-      order: index,
-    }));
+  ref.items.splice(
+    ref.items.findIndex((e) => e.id === itemId),
+    1,
+  );
+  // reindex
+  ref.items.forEach((entry, idx) => (entry.order = idx));
 
+  // cleanup media files if present
   if (item.media) {
     await deleteFileIfExists(
       joinPath(getEventPath(profileName, eventId), item.media.fileName),
@@ -782,31 +876,31 @@ export async function deleteItem(
   }
 
   await saveEventManifest(profileName, eventId, manifest);
-  return manifest.items;
+  return ref.items;
 }
 
 export async function updateItem(
   profileName: string,
   eventId: string,
   itemId: string,
+  containerPath: string[] | undefined,
   input: UpdateItemInput,
 ) {
   const manifest = await readEventManifest(profileName, eventId);
-  const item = manifest.items.find((entry) => entry.id === itemId);
+  const ref = getContainerItemsRef(manifest, containerPath);
+  if (!ref) throw new Error("Container path not found.");
 
-  if (!item) {
+  const item = ref.items.find((entry) => entry.id === itemId);
+  if (!item)
     throw new Error(`Item ${itemId} was not found for event ${eventId}.`);
-  }
 
   const now = isoNow();
   const nextTitle = input.title?.trim() || undefined;
   const nextText = input.text?.trim() || item.text || "";
   const nextComment = input.comment?.trim() || undefined;
 
-  manifest.items = manifest.items.map((entry) => {
-    if (entry.id !== itemId) {
-      return entry;
-    }
+  ref.items = ref.items.map((entry) => {
+    if (entry.id !== itemId) return entry;
 
     if (entry.kind !== "text") {
       return {
@@ -828,7 +922,83 @@ export async function updateItem(
   });
 
   await saveEventManifest(profileName, eventId, manifest);
-  return manifest.items;
+  return ref.items;
+}
+
+export async function addGroupItem(
+  profileName: string,
+  eventId: string,
+  containerPath: string[] | undefined,
+  input: { title?: string; comment?: string },
+) {
+  const manifest = await readEventManifest(profileName, eventId);
+  const ref = getContainerItemsRef(manifest, containerPath);
+  if (!ref) throw new Error("Container path not found.");
+
+  const now = isoNow();
+  const item: JournalItem = {
+    id: createId("group"),
+    kind: "group",
+    order: ref.items.length,
+    createdAt: now,
+    updatedAt: now,
+    title: input.title?.trim() || undefined,
+    comment: input.comment?.trim() || undefined,
+    groupItems: [],
+  };
+
+  ref.items.push(item);
+  await saveEventManifest(profileName, eventId, manifest);
+  return item;
+}
+
+export async function addLocationItem(
+  profileName: string,
+  eventId: string,
+  containerPath: string[] | undefined,
+  input: LocationData,
+) {
+  const manifest = await readEventManifest(profileName, eventId);
+  const ref = getContainerItemsRef(manifest, containerPath);
+  if (!ref) throw new Error("Container path not found.");
+
+  const now = isoNow();
+  const item: JournalItem = {
+    id: createId("location"),
+    kind: "location",
+    order: ref.items.length,
+    createdAt: now,
+    updatedAt: now,
+    title: input.title || undefined,
+    comment: input.comment || undefined,
+    location: input,
+  };
+
+  ref.items.push(item);
+  await saveEventManifest(profileName, eventId, manifest);
+  return item;
+}
+
+export async function moveItem(
+  profileName: string,
+  eventId: string,
+  itemId: string,
+  fromPath: string[] | undefined,
+  toPath: string[] | undefined,
+) {
+  const manifest = await readEventManifest(profileName, eventId);
+  const fromRef = getContainerItemsRef(manifest, fromPath);
+  const toRef = getContainerItemsRef(manifest, toPath);
+  if (!fromRef || !toRef) throw new Error("Container path not found.");
+
+  const idx = fromRef.items.findIndex((it) => it.id === itemId);
+  if (idx === -1) throw new Error("Item not found in source container.");
+  const [item] = fromRef.items.splice(idx, 1);
+  item.order = toRef.items.length;
+  toRef.items.push(item);
+
+  await saveEventManifest(profileName, eventId, manifest);
+  return item;
 }
 
 export async function getEventStoragePaths(
