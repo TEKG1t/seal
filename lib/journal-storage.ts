@@ -94,6 +94,7 @@ export type UpdateItemInput = {
   title?: string;
   text?: string;
   comment?: string;
+  location?: LocationData;
 };
 
 export function getJournalRootPath() {
@@ -902,21 +903,32 @@ export async function updateItem(
   ref.items = ref.items.map((entry) => {
     if (entry.id !== itemId) return entry;
 
-    if (entry.kind !== "text") {
+    if (entry.kind === "text") {
       return {
         ...entry,
         title: nextTitle,
+        text: nextText,
         comment: nextComment,
-        kind: nextComment ? "media-with-comment" : "media",
         updatedAt: now,
       };
     }
 
+    if (entry.kind === "location") {
+      return {
+        ...entry,
+        title: nextTitle,
+        comment: nextComment,
+        location: input.location ?? entry.location,
+        updatedAt: now,
+      };
+    }
+
+    // media or media-with-comment
     return {
       ...entry,
       title: nextTitle,
-      text: nextText,
       comment: nextComment,
+      kind: nextComment ? "media-with-comment" : "media",
       updatedAt: now,
     };
   });

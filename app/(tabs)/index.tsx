@@ -21,7 +21,6 @@ import {
 } from "react-native";
 import DraggableFlatList from "react-native-draggable-flatlist";
 import ImageZoom from "react-native-image-pan-zoom";
-
 import {
   addGroupItem,
   addLocationItem,
@@ -46,7 +45,7 @@ import {
   reorderItems,
   updateEvent,
   updateItem,
-} from "@/lib/journal-storage";
+} from "../../lib/journal-storage";
 
 type ScreenLevel = "home" | "profile" | "event" | "group";
 type ItemCreateKind = "text" | "image" | "video" | "group" | "location";
@@ -156,17 +155,6 @@ export default function HomeScreen() {
   const [selectedLocation, setSelectedLocation] = useState<LocationData | null>(
     null,
   );
-  const mapRef = useRef<any>(null);
-  const mapsModule = useMemo(() => {
-    try {
-      // require at runtime to avoid native module errors in environments
-      // where react-native-maps isn't available (Expo web / dev client)
-       
-      return require("react-native-maps");
-    } catch {
-      return null;
-    }
-  }, []);
 
   const screenLabel = useMemo(() => {
     if (screen === "home") {
@@ -640,11 +628,16 @@ export default function HomeScreen() {
         ? "text"
         : item.kind === "group"
           ? "group"
-          : (item.media?.kind ?? "text"),
+          : item.kind === "location"
+            ? "location"
+            : (item.media?.kind ?? "text"),
     );
     setNewItemTitle(item.title ?? "");
     setNewItemText(item.text ?? "");
     setNewItemComment(item.comment ?? "");
+    if (item.kind === "location") {
+      setSelectedLocation(item.location ?? null);
+    }
     setShowCreateModal(true);
   };
 
@@ -753,19 +746,40 @@ export default function HomeScreen() {
     if (!selectedProfile || !selectedEvent) return;
 
     try {
-      await addLocationItem(
-        selectedProfile.name,
-        selectedEvent.id,
-        selectedGroupPath,
-        {
-          latitude: selectedLocation.latitude,
-          longitude: selectedLocation.longitude,
-          zoom: selectedLocation.zoom,
-          address: selectedLocation.address,
-          title: newItemTitle.trim() || undefined,
-          comment: newItemComment.trim() || undefined,
-        },
-      );
+      if (itemBeingEdited && itemBeingEdited.kind === "location") {
+        await updateItem(
+          selectedProfile.name,
+          selectedEvent.id,
+          itemBeingEdited.id,
+          selectedGroupPath,
+          {
+            title: newItemTitle.trim() || undefined,
+            comment: newItemComment.trim() || undefined,
+            location: {
+              latitude: selectedLocation.latitude,
+              longitude: selectedLocation.longitude,
+              zoom: selectedLocation.zoom,
+              address: selectedLocation.address,
+              title: newItemTitle.trim() || undefined,
+              comment: newItemComment.trim() || undefined,
+            },
+          },
+        );
+      } else {
+        await addLocationItem(
+          selectedProfile.name,
+          selectedEvent.id,
+          selectedGroupPath,
+          {
+            latitude: selectedLocation.latitude,
+            longitude: selectedLocation.longitude,
+            zoom: selectedLocation.zoom,
+            address: selectedLocation.address,
+            title: newItemTitle.trim() || undefined,
+            comment: newItemComment.trim() || undefined,
+          },
+        );
+      }
       await loadItems();
       setShowLocationPicker(false);
       setSelectedLocation(null);
@@ -1316,6 +1330,31 @@ export default function HomeScreen() {
                                 </View>
                               ))}
                           </View>
+                        ) : item.location ? (
+                          <Pressable
+                            onPress={() => {
+                              setItemBeingEdited(item);
+                              setSelectedLocation(item.location ?? null);
+                              setShowLocationPicker(true);
+                            }}
+                            style={({ pressed }) => [
+                              styles.itemImageCell,
+                              styles.itemImageCellSingle,
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <Image
+                              source={{
+                                uri: getLocationPreviewUri(
+                                  item.location.latitude,
+                                  item.location.longitude,
+                                  item.location.zoom ?? 15,
+                                ),
+                              }}
+                              style={styles.itemImage}
+                              contentFit="cover"
+                            />
+                          </Pressable>
                         ) : null}
 
                         {item.media?.kind === "video" ? (
@@ -1657,6 +1696,31 @@ export default function HomeScreen() {
                                   </View>
                                 ))}
                             </View>
+                          ) : item.location ? (
+                            <Pressable
+                              onPress={() => {
+                                setItemBeingEdited(item);
+                                setSelectedLocation(item.location ?? null);
+                                setShowLocationPicker(true);
+                              }}
+                              style={({ pressed }) => [
+                                styles.itemImageCell,
+                                styles.itemImageCellSingle,
+                                pressed && styles.pressed,
+                              ]}
+                            >
+                              <Image
+                                source={{
+                                  uri: getLocationPreviewUri(
+                                    item.location.latitude,
+                                    item.location.longitude,
+                                    item.location.zoom ?? 15,
+                                  ),
+                                }}
+                                style={styles.itemImage}
+                                contentFit="cover"
+                              />
+                            </Pressable>
                           ) : null;
                         })()}
 
@@ -1879,7 +1943,13 @@ export default function HomeScreen() {
 
                 <View style={styles.itemTypeRow}>
                   {(
-                    ["text", "image", "video", "group"] as ItemCreateKind[]
+                    [
+                      "text",
+                      "image",
+                      "video",
+                      "group",
+                      "location",
+                    ] as ItemCreateKind[]
                   ).map((kind) => (
                     <Pressable
                       key={kind}
@@ -1993,6 +2063,49 @@ export default function HomeScreen() {
                       },
                     ]}
                   />
+                ) : itemBeingEdited.kind === "location" ? (
+                  <View>
+                    {itemBeingEdited.location ? (
+                      <Pressable
+                        onPress={() => {
+                          setItemBeingEdited(itemBeingEdited);
+                          setSelectedLocation(itemBeingEdited.location ?? null);
+                          setShowLocationPicker(true);
+                        }}
+                        style={({ pressed }) => [
+                          styles.itemImageCell,
+                          styles.itemImageCellSingle,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <Image
+                          source={{
+                            uri: getLocationPreviewUri(
+                              itemBeingEdited.location!.latitude,
+                              itemBeingEdited.location!.longitude,
+                              itemBeingEdited.location!.zoom ?? 15,
+                            ),
+                          }}
+                          style={styles.itemImage}
+                          contentFit="cover"
+                        />
+                      </Pressable>
+                    ) : null}
+                    <Pressable
+                      onPress={() => {
+                        setItemBeingEdited(itemBeingEdited);
+                        setSelectedLocation(itemBeingEdited.location ?? null);
+                        setShowLocationPicker(true);
+                      }}
+                      style={({ pressed }) => [
+                        styles.modalButton,
+                        { marginTop: 8 },
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Text style={{ color: palette.text }}>Edit Location</Text>
+                    </Pressable>
+                  </View>
                 ) : (
                   <Text
                     style={[styles.helperText, { color: palette.textMuted }]}
@@ -2607,57 +2720,194 @@ export default function HomeScreen() {
 
             {selectedLocation
               ? (() => {
-                  const MapComp = mapsModule?.default ?? mapsModule;
-                  const MarkerComp =
-                    mapsModule?.Marker ?? mapsModule?.default?.Marker ?? null;
-
-                  if (MapComp) {
-                    return (
-                      <MapComp
-                        ref={mapRef}
-                        style={{ flex: 1, borderRadius: 12, marginBottom: 12 }}
-                        initialRegion={{
-                          latitude: selectedLocation.latitude,
-                          longitude: selectedLocation.longitude,
-                          latitudeDelta: 0.0922,
-                          longitudeDelta: 0.0421,
-                        }}
-                        onPress={(e: any) => {
-                          const { latitude, longitude } =
-                            e.nativeEvent.coordinate;
-                          setSelectedLocation({
-                            ...selectedLocation,
-                            latitude,
-                            longitude,
-                          });
+                  return (
+                    <View style={{ flex: 1, gap: 12 }}>
+                      <View
+                        style={{
+                          flex: 1,
+                          borderRadius: 12,
+                          overflow: "hidden",
+                          backgroundColor: "#0c111a",
+                          position: "relative",
+                          marginBottom: 4,
                         }}
                       >
-                        {MarkerComp ? (
-                          <MarkerComp
-                            coordinate={{
-                              latitude: selectedLocation.latitude,
-                              longitude: selectedLocation.longitude,
-                            }}
-                            title="Selected Location"
-                          />
-                        ) : null}
-                      </MapComp>
-                    );
-                  }
+                        <Image
+                          source={{
+                            uri: getLocationPreviewUri(
+                              selectedLocation.latitude,
+                              selectedLocation.longitude,
+                              selectedLocation.zoom ?? 15,
+                            ),
+                          }}
+                          style={{ width: "100%", height: "100%" }}
+                          contentFit="cover"
+                        />
+                        <View
+                          pointerEvents="none"
+                          style={{
+                            position: "absolute",
+                            left: "50%",
+                            top: "50%",
+                            width: 18,
+                            height: 18,
+                            marginLeft: -9,
+                            marginTop: -18,
+                            borderRadius: 999,
+                            backgroundColor: "#ef4444",
+                            borderWidth: 3,
+                            borderColor: "#ffffff",
+                          }}
+                        />
+                      </View>
 
-                  return (
-                    <View
-                      style={{
-                        flex: 1,
-                        borderRadius: 12,
-                        marginBottom: 12,
-                        alignItems: "center",
-                        justifyContent: "center",
-                      }}
-                    >
-                      <Text style={{ color: palette.text }}>
-                        Map is unavailable in this environment
+                      <Text style={{ color: palette.textMuted, fontSize: 13 }}>
+                        Lat {selectedLocation.latitude.toFixed(5)} · Lon{" "}
+                        {selectedLocation.longitude.toFixed(5)} · Zoom{" "}
+                        {selectedLocation.zoom ?? 15}
                       </Text>
+
+                      <View style={styles.locationControlRow}>
+                        <Pressable
+                          onPress={openLocationPicker}
+                          style={({ pressed }) => [
+                            styles.modalButton,
+                            {
+                              flex: 1,
+                              borderColor: palette.border,
+                              backgroundColor: palette.cardMuted,
+                            },
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={{ color: palette.text }}>
+                            Use Current Location
+                          </Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() =>
+                            setSelectedLocation({
+                              ...selectedLocation,
+                              zoom: Math.min(
+                                19,
+                                (selectedLocation.zoom ?? 15) + 1,
+                              ),
+                            })
+                          }
+                          style={({ pressed }) => [
+                            styles.modalButton,
+                            {
+                              width: 92,
+                              borderColor: palette.border,
+                              backgroundColor: palette.cardMuted,
+                            },
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={{ color: palette.text }}>Zoom +</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() =>
+                            setSelectedLocation({
+                              ...selectedLocation,
+                              zoom: Math.max(
+                                1,
+                                (selectedLocation.zoom ?? 15) - 1,
+                              ),
+                            })
+                          }
+                          style={({ pressed }) => [
+                            styles.modalButton,
+                            {
+                              width: 92,
+                              borderColor: palette.border,
+                              backgroundColor: palette.cardMuted,
+                            },
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={{ color: palette.text }}>Zoom -</Text>
+                        </Pressable>
+                      </View>
+
+                      <View style={styles.locationControlRow}>
+                        <Pressable
+                          onPress={() =>
+                            setSelectedLocation({
+                              ...selectedLocation,
+                              latitude: selectedLocation.latitude + 0.001,
+                            })
+                          }
+                          style={({ pressed }) => [
+                            styles.modalButton,
+                            {
+                              flex: 1,
+                              borderColor: palette.border,
+                              backgroundColor: palette.cardMuted,
+                            },
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={{ color: palette.text }}>North</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() =>
+                            setSelectedLocation({
+                              ...selectedLocation,
+                              latitude: selectedLocation.latitude - 0.001,
+                            })
+                          }
+                          style={({ pressed }) => [
+                            styles.modalButton,
+                            {
+                              flex: 1,
+                              borderColor: palette.border,
+                              backgroundColor: palette.cardMuted,
+                            },
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={{ color: palette.text }}>South</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() =>
+                            setSelectedLocation({
+                              ...selectedLocation,
+                              longitude: selectedLocation.longitude - 0.001,
+                            })
+                          }
+                          style={({ pressed }) => [
+                            styles.modalButton,
+                            {
+                              flex: 1,
+                              borderColor: palette.border,
+                              backgroundColor: palette.cardMuted,
+                            },
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={{ color: palette.text }}>West</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() =>
+                            setSelectedLocation({
+                              ...selectedLocation,
+                              longitude: selectedLocation.longitude + 0.001,
+                            })
+                          }
+                          style={({ pressed }) => [
+                            styles.modalButton,
+                            {
+                              flex: 1,
+                              borderColor: palette.border,
+                              backgroundColor: palette.cardMuted,
+                            },
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={{ color: palette.text }}>East</Text>
+                        </Pressable>
+                      </View>
                     </View>
                   );
                 })()
@@ -3098,6 +3348,10 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
     gap: 8,
   },
+  locationControlRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
   modalButton: {
     minWidth: 92,
     borderRadius: 10,
@@ -3138,4 +3392,35 @@ function getItemVideoUri(item: JournalItem, selectedEventPath: string | null) {
   }
 
   return null;
+}
+
+function getLocationPreviewUri(latitude: number, longitude: number, zoom = 15) {
+  const normalizedZoom = Math.max(1, Math.min(19, Math.floor(zoom)));
+  const gridSize = Math.max(24, 72 - normalizedZoom * 2);
+  const coords = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#172033" />
+          <stop offset="100%" stop-color="#0d121c" />
+        </linearGradient>
+        <pattern id="grid" width="${gridSize}" height="${gridSize}" patternUnits="userSpaceOnUse">
+          <path d="M ${gridSize} 0 L 0 0 0 ${gridSize}" fill="none" stroke="#31415e" stroke-width="1" opacity="0.55" />
+        </pattern>
+      </defs>
+      <rect width="600" height="400" fill="url(#bg)" />
+      <rect width="600" height="400" fill="url(#grid)" opacity="0.9" />
+      <path d="M0 ${80 + normalizedZoom * 2} C 120 ${40 + normalizedZoom}, 220 ${120 + normalizedZoom}, 300 ${90 + normalizedZoom} S 480 ${160 + normalizedZoom}, 600 ${120 + normalizedZoom} L 600 400 L 0 400 Z" fill="#23324a" opacity="0.92" />
+      <path d="M0 ${250 - normalizedZoom} C 80 ${220 - normalizedZoom}, 140 ${260 - normalizedZoom}, 220 ${235 - normalizedZoom} S 360 ${190 - normalizedZoom}, 460 ${215 - normalizedZoom} S 560 ${255 - normalizedZoom}, 600 ${230 - normalizedZoom} L 600 400 L 0 400 Z" fill="#1c2b3d" opacity="0.95" />
+      <circle cx="300" cy="200" r="18" fill="#ef4444" stroke="#ffffff" stroke-width="6" />
+      <circle cx="300" cy="200" r="46" fill="none" stroke="#ef4444" stroke-width="3" opacity="0.45" />
+      <rect x="24" y="24" width="210" height="78" rx="14" fill="rgba(3,7,18,0.7)" stroke="#3a4a67" />
+      <text x="42" y="55" fill="#f3f6fb" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700">Location Preview</text>
+      <text x="42" y="82" fill="#9caac0" font-family="Arial, Helvetica, sans-serif" font-size="14">${coords}</text>
+      <text x="42" y="102" fill="#9caac0" font-family="Arial, Helvetica, sans-serif" font-size="14">Zoom ${normalizedZoom}</text>
+    </svg>
+  `;
+
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
