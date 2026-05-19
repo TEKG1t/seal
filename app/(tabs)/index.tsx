@@ -6,49 +6,55 @@ import * as Location from "expo-location";
 import * as VideoThumbnails from "expo-video-thumbnails";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  FlatList,
-  Modal,
-  Platform,
-  Pressable,
-  Image as RNImage,
-  SafeAreaView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TextInput,
-  useWindowDimensions,
-  View,
+    FlatList,
+    Modal,
+    Platform,
+    Pressable,
+    Image as RNImage,
+    SafeAreaView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TextInput,
+    useWindowDimensions,
+    View,
 } from "react-native";
 import DraggableFlatList from "react-native-draggable-flatlist";
 import ImageZoom from "react-native-image-pan-zoom";
 import {
-  addGroupItem,
-  addLocationItem,
-  addMediaItem,
-  addTextItem,
-  createEvent,
-  createProfile,
-  deleteEvent,
-  deleteItem,
-  deleteProfile,
-  exportProfile,
-  getEventStoragePaths,
-  JournalEvent,
-  JournalItem,
-  JournalProfile,
-  listEvents,
-  listItems,
-  listProfiles,
-  LocationData,
-  moveItem,
-  renameProfile,
-  reorderItems,
-  updateEvent,
-  updateItem,
+    ItemKindSelector,
+    type ItemKind as ItemCreateKind,
+} from "../../components/item-kind-selector";
+import { LocationPickerModal } from "../../components/location-picker-modal";
+import { LocationEditor } from "../../features/items/location/LocationEditor";
+import { LocationPreviewCard } from "../../features/items/location/LocationPreviewCard";
+import {
+    addGroupItem,
+    addLocationItem,
+    addMediaItem,
+    addTextItem,
+    createEvent,
+    createProfile,
+    deleteEvent,
+    deleteItem,
+    deleteProfile,
+    exportProfile,
+    getEventStoragePaths,
+    JournalEvent,
+    JournalItem,
+    JournalProfile,
+    listEvents,
+    listItems,
+    listProfiles,
+    LocationData,
+    moveItem,
+    renameProfile,
+    reorderItems,
+    updateEvent,
+    updateItem,
 } from "../../lib/journal-storage";
 
 type ScreenLevel = "home" | "profile" | "event" | "group";
-type ItemCreateKind = "text" | "image" | "video" | "group" | "location";
 
 type Palette = {
   bg: string;
@@ -741,6 +747,12 @@ export default function HomeScreen() {
     }
   };
 
+  const closeLocationPicker = () => {
+    setShowLocationPicker(false);
+    setSelectedLocation(null);
+    closeCreateModal();
+  };
+
   const confirmLocationSelection = async () => {
     if (!selectedLocation) return;
     if (!selectedProfile || !selectedEvent) return;
@@ -781,9 +793,7 @@ export default function HomeScreen() {
         );
       }
       await loadItems();
-      setShowLocationPicker(false);
-      setSelectedLocation(null);
-      closeCreateModal();
+      closeLocationPicker();
     } catch {
       // swallow for now
     }
@@ -1343,14 +1353,8 @@ export default function HomeScreen() {
                               pressed && styles.pressed,
                             ]}
                           >
-                            <Image
-                              source={{
-                                uri: getLocationPreviewUri(
-                                  item.location.latitude,
-                                  item.location.longitude,
-                                  item.location.zoom ?? 15,
-                                ),
-                              }}
+                            <LocationPreviewCard
+                              location={item.location}
                               style={styles.itemImage}
                               contentFit="cover"
                             />
@@ -1709,14 +1713,8 @@ export default function HomeScreen() {
                                 pressed && styles.pressed,
                               ]}
                             >
-                              <Image
-                                source={{
-                                  uri: getLocationPreviewUri(
-                                    item.location.latitude,
-                                    item.location.longitude,
-                                    item.location.zoom ?? 15,
-                                  ),
-                                }}
+                              <LocationPreviewCard
+                                location={item.location}
                                 style={styles.itemImage}
                                 contentFit="cover"
                               />
@@ -1941,44 +1939,15 @@ export default function HomeScreen() {
                   ]}
                 />
 
-                <View style={styles.itemTypeRow}>
-                  {(
-                    [
-                      "text",
-                      "image",
-                      "video",
-                      "group",
-                      "location",
-                    ] as ItemCreateKind[]
-                  ).map((kind) => (
-                    <Pressable
-                      key={kind}
-                      onPress={() => setNewItemKind(kind)}
-                      style={({ pressed }) => [
-                        styles.itemTypeButton,
-                        {
-                          borderColor: palette.border,
-                          backgroundColor:
-                            newItemKind === kind
-                              ? palette.accent
-                              : palette.cardMuted,
-                        },
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <Text
-                        style={{
-                          color:
-                            newItemKind === kind ? "#03221d" : palette.text,
-                          fontWeight: "700",
-                          textTransform: "capitalize",
-                        }}
-                      >
-                        {kind}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
+                <ItemKindSelector
+                  kinds={["text", "image", "video", "group", "location"]}
+                  selectedKind={newItemKind}
+                  borderColor={palette.border}
+                  cardMutedColor={palette.cardMuted}
+                  accentColor={palette.accent}
+                  textColor={palette.text}
+                  onSelectKind={setNewItemKind}
+                />
 
                 {newItemKind === "text" ? (
                   <TextInput
@@ -2064,48 +2033,21 @@ export default function HomeScreen() {
                     ]}
                   />
                 ) : itemBeingEdited.kind === "location" ? (
-                  <View>
-                    {itemBeingEdited.location ? (
-                      <Pressable
-                        onPress={() => {
-                          setItemBeingEdited(itemBeingEdited);
-                          setSelectedLocation(itemBeingEdited.location ?? null);
-                          setShowLocationPicker(true);
-                        }}
-                        style={({ pressed }) => [
-                          styles.itemImageCell,
-                          styles.itemImageCellSingle,
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <Image
-                          source={{
-                            uri: getLocationPreviewUri(
-                              itemBeingEdited.location!.latitude,
-                              itemBeingEdited.location!.longitude,
-                              itemBeingEdited.location!.zoom ?? 15,
-                            ),
-                          }}
-                          style={styles.itemImage}
-                          contentFit="cover"
-                        />
-                      </Pressable>
-                    ) : null}
-                    <Pressable
-                      onPress={() => {
-                        setItemBeingEdited(itemBeingEdited);
-                        setSelectedLocation(itemBeingEdited.location ?? null);
-                        setShowLocationPicker(true);
-                      }}
-                      style={({ pressed }) => [
-                        styles.modalButton,
-                        { marginTop: 8 },
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <Text style={{ color: palette.text }}>Edit Location</Text>
-                    </Pressable>
-                  </View>
+                  <LocationEditor
+                    location={itemBeingEdited.location ?? null}
+                    onOpenPicker={() => {
+                      setItemBeingEdited(itemBeingEdited);
+                      setSelectedLocation(itemBeingEdited.location ?? null);
+                      setShowLocationPicker(true);
+                    }}
+                    previewWrapperStyle={[
+                      styles.itemImageCell,
+                      styles.itemImageCellSingle,
+                    ]}
+                    previewImageStyle={styles.itemImage}
+                    buttonStyle={styles.modalButton}
+                    buttonTextColor={palette.text}
+                  />
                 ) : (
                   <Text
                     style={[styles.helperText, { color: palette.textMuted }]}
@@ -2148,38 +2090,15 @@ export default function HomeScreen() {
                   ]}
                 />
 
-                <View style={styles.itemTypeRow}>
-                  {(
-                    ["text", "image", "video", "group"] as ItemCreateKind[]
-                  ).map((kind) => (
-                    <Pressable
-                      key={kind}
-                      onPress={() => setNewItemKind(kind)}
-                      style={({ pressed }) => [
-                        styles.itemTypeButton,
-                        {
-                          borderColor: palette.border,
-                          backgroundColor:
-                            newItemKind === kind
-                              ? palette.accent
-                              : palette.cardMuted,
-                        },
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <Text
-                        style={{
-                          color:
-                            newItemKind === kind ? "#03221d" : palette.text,
-                          fontWeight: "700",
-                          textTransform: "capitalize",
-                        }}
-                      >
-                        {kind}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
+                <ItemKindSelector
+                  kinds={["text", "image", "video", "group", "location"]}
+                  selectedKind={newItemKind}
+                  borderColor={palette.border}
+                  cardMutedColor={palette.cardMuted}
+                  accentColor={palette.accent}
+                  textColor={palette.text}
+                  onSelectKind={setNewItemKind}
+                />
 
                 {newItemKind === "text" ? (
                   <TextInput
@@ -2263,6 +2182,22 @@ export default function HomeScreen() {
                         backgroundColor: palette.cardMuted,
                       },
                     ]}
+                  />
+                ) : itemBeingEdited.kind === "location" ? (
+                  <LocationEditor
+                    location={itemBeingEdited.location ?? null}
+                    onOpenPicker={() => {
+                      setItemBeingEdited(itemBeingEdited);
+                      setSelectedLocation(itemBeingEdited.location ?? null);
+                      setShowLocationPicker(true);
+                    }}
+                    previewWrapperStyle={[
+                      styles.itemImageCell,
+                      styles.itemImageCellSingle,
+                    ]}
+                    previewImageStyle={styles.itemImage}
+                    buttonStyle={styles.modalButton}
+                    buttonTextColor={palette.text}
                   />
                 ) : (
                   <Text
@@ -2688,264 +2623,21 @@ export default function HomeScreen() {
           </View>
         </View>
       </Modal>
-      <Modal
+      <LocationPickerModal
         visible={showLocationPicker}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowLocationPicker(false)}
-      >
-        <View
-          style={[
-            styles.previewOverlay,
-            { backgroundColor: "rgba(2,6,12,0.95)" },
-          ]}
-        >
-          <View style={{ flex: 1, padding: 12 }}>
-            <View
-              style={{
-                flexDirection: "row",
-                justifyContent: "space-between",
-                marginBottom: 12,
-              }}
-            >
-              <Text
-                style={{ color: palette.text, fontSize: 18, fontWeight: "800" }}
-              >
-                Select Location
-              </Text>
-              <Pressable onPress={() => setShowLocationPicker(false)}>
-                <MaterialIcons name="close" size={24} color={palette.text} />
-              </Pressable>
-            </View>
-
-            {selectedLocation
-              ? (() => {
-                  return (
-                    <View style={{ flex: 1, gap: 12 }}>
-                      <View
-                        style={{
-                          flex: 1,
-                          borderRadius: 12,
-                          overflow: "hidden",
-                          backgroundColor: "#0c111a",
-                          position: "relative",
-                          marginBottom: 4,
-                        }}
-                      >
-                        <Image
-                          source={{
-                            uri: getLocationPreviewUri(
-                              selectedLocation.latitude,
-                              selectedLocation.longitude,
-                              selectedLocation.zoom ?? 15,
-                            ),
-                          }}
-                          style={{ width: "100%", height: "100%" }}
-                          contentFit="cover"
-                        />
-                        <View
-                          pointerEvents="none"
-                          style={{
-                            position: "absolute",
-                            left: "50%",
-                            top: "50%",
-                            width: 18,
-                            height: 18,
-                            marginLeft: -9,
-                            marginTop: -18,
-                            borderRadius: 999,
-                            backgroundColor: "#ef4444",
-                            borderWidth: 3,
-                            borderColor: "#ffffff",
-                          }}
-                        />
-                      </View>
-
-                      <Text style={{ color: palette.textMuted, fontSize: 13 }}>
-                        Lat {selectedLocation.latitude.toFixed(5)} · Lon{" "}
-                        {selectedLocation.longitude.toFixed(5)} · Zoom{" "}
-                        {selectedLocation.zoom ?? 15}
-                      </Text>
-
-                      <View style={styles.locationControlRow}>
-                        <Pressable
-                          onPress={openLocationPicker}
-                          style={({ pressed }) => [
-                            styles.modalButton,
-                            {
-                              flex: 1,
-                              borderColor: palette.border,
-                              backgroundColor: palette.cardMuted,
-                            },
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <Text style={{ color: palette.text }}>
-                            Use Current Location
-                          </Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() =>
-                            setSelectedLocation({
-                              ...selectedLocation,
-                              zoom: Math.min(
-                                19,
-                                (selectedLocation.zoom ?? 15) + 1,
-                              ),
-                            })
-                          }
-                          style={({ pressed }) => [
-                            styles.modalButton,
-                            {
-                              width: 92,
-                              borderColor: palette.border,
-                              backgroundColor: palette.cardMuted,
-                            },
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <Text style={{ color: palette.text }}>Zoom +</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() =>
-                            setSelectedLocation({
-                              ...selectedLocation,
-                              zoom: Math.max(
-                                1,
-                                (selectedLocation.zoom ?? 15) - 1,
-                              ),
-                            })
-                          }
-                          style={({ pressed }) => [
-                            styles.modalButton,
-                            {
-                              width: 92,
-                              borderColor: palette.border,
-                              backgroundColor: palette.cardMuted,
-                            },
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <Text style={{ color: palette.text }}>Zoom -</Text>
-                        </Pressable>
-                      </View>
-
-                      <View style={styles.locationControlRow}>
-                        <Pressable
-                          onPress={() =>
-                            setSelectedLocation({
-                              ...selectedLocation,
-                              latitude: selectedLocation.latitude + 0.001,
-                            })
-                          }
-                          style={({ pressed }) => [
-                            styles.modalButton,
-                            {
-                              flex: 1,
-                              borderColor: palette.border,
-                              backgroundColor: palette.cardMuted,
-                            },
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <Text style={{ color: palette.text }}>North</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() =>
-                            setSelectedLocation({
-                              ...selectedLocation,
-                              latitude: selectedLocation.latitude - 0.001,
-                            })
-                          }
-                          style={({ pressed }) => [
-                            styles.modalButton,
-                            {
-                              flex: 1,
-                              borderColor: palette.border,
-                              backgroundColor: palette.cardMuted,
-                            },
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <Text style={{ color: palette.text }}>South</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() =>
-                            setSelectedLocation({
-                              ...selectedLocation,
-                              longitude: selectedLocation.longitude - 0.001,
-                            })
-                          }
-                          style={({ pressed }) => [
-                            styles.modalButton,
-                            {
-                              flex: 1,
-                              borderColor: palette.border,
-                              backgroundColor: palette.cardMuted,
-                            },
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <Text style={{ color: palette.text }}>West</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() =>
-                            setSelectedLocation({
-                              ...selectedLocation,
-                              longitude: selectedLocation.longitude + 0.001,
-                            })
-                          }
-                          style={({ pressed }) => [
-                            styles.modalButton,
-                            {
-                              flex: 1,
-                              borderColor: palette.border,
-                              backgroundColor: palette.cardMuted,
-                            },
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <Text style={{ color: palette.text }}>East</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  );
-                })()
-              : null}
-
-            <View style={styles.modalActions}>
-              <Pressable
-                onPress={() => setShowLocationPicker(false)}
-                style={({ pressed }) => [
-                  styles.modalButton,
-                  {
-                    borderColor: palette.border,
-                    backgroundColor: palette.cardMuted,
-                  },
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text style={{ color: palette.text }}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                onPress={confirmLocationSelection}
-                style={({ pressed }) => [
-                  styles.modalButton,
-                  {
-                    borderColor: palette.accent,
-                    backgroundColor: palette.accent,
-                  },
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text style={{ color: "#03221d", fontWeight: "800" }}>
-                  Use This Location
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+        selectedLocation={selectedLocation}
+        palette={{
+          border: palette.border,
+          text: palette.text,
+          textMuted: palette.textMuted,
+          accent: palette.accent,
+          cardMuted: palette.cardMuted,
+        }}
+        onClose={closeLocationPicker}
+        onConfirm={confirmLocationSelection}
+        onUseCurrentLocation={openLocationPicker}
+        onChangeLocation={setSelectedLocation}
+      />
     </SafeAreaView>
   );
 }
@@ -3392,35 +3084,4 @@ function getItemVideoUri(item: JournalItem, selectedEventPath: string | null) {
   }
 
   return null;
-}
-
-function getLocationPreviewUri(latitude: number, longitude: number, zoom = 15) {
-  const normalizedZoom = Math.max(1, Math.min(19, Math.floor(zoom)));
-  const gridSize = Math.max(24, 72 - normalizedZoom * 2);
-  const coords = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400">
-      <defs>
-        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#172033" />
-          <stop offset="100%" stop-color="#0d121c" />
-        </linearGradient>
-        <pattern id="grid" width="${gridSize}" height="${gridSize}" patternUnits="userSpaceOnUse">
-          <path d="M ${gridSize} 0 L 0 0 0 ${gridSize}" fill="none" stroke="#31415e" stroke-width="1" opacity="0.55" />
-        </pattern>
-      </defs>
-      <rect width="600" height="400" fill="url(#bg)" />
-      <rect width="600" height="400" fill="url(#grid)" opacity="0.9" />
-      <path d="M0 ${80 + normalizedZoom * 2} C 120 ${40 + normalizedZoom}, 220 ${120 + normalizedZoom}, 300 ${90 + normalizedZoom} S 480 ${160 + normalizedZoom}, 600 ${120 + normalizedZoom} L 600 400 L 0 400 Z" fill="#23324a" opacity="0.92" />
-      <path d="M0 ${250 - normalizedZoom} C 80 ${220 - normalizedZoom}, 140 ${260 - normalizedZoom}, 220 ${235 - normalizedZoom} S 360 ${190 - normalizedZoom}, 460 ${215 - normalizedZoom} S 560 ${255 - normalizedZoom}, 600 ${230 - normalizedZoom} L 600 400 L 0 400 Z" fill="#1c2b3d" opacity="0.95" />
-      <circle cx="300" cy="200" r="18" fill="#ef4444" stroke="#ffffff" stroke-width="6" />
-      <circle cx="300" cy="200" r="46" fill="none" stroke="#ef4444" stroke-width="3" opacity="0.45" />
-      <rect x="24" y="24" width="210" height="78" rx="14" fill="rgba(3,7,18,0.7)" stroke="#3a4a67" />
-      <text x="42" y="55" fill="#f3f6fb" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700">Location Preview</text>
-      <text x="42" y="82" fill="#9caac0" font-family="Arial, Helvetica, sans-serif" font-size="14">${coords}</text>
-      <text x="42" y="102" fill="#9caac0" font-family="Arial, Helvetica, sans-serif" font-size="14">Zoom ${normalizedZoom}</text>
-    </svg>
-  `;
-
-  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
