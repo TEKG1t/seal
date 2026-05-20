@@ -748,7 +748,9 @@ export async function addMediaItem(
   const created: JournalItem[] = [];
   const now = isoNow();
 
-  if (input.sourceUris && input.sourceUris.length) {
+  // If multiple source URIs are provided, create a single item with `mediaFiles`.
+  if (input.sourceUris && input.sourceUris.length > 1) {
+    const mediaFiles: JournalMediaRef[] = [];
     for (const src of input.sourceUris) {
       const copiedFileName = await copyMediaIntoEventFolder(
         profileName,
@@ -757,23 +759,52 @@ export async function addMediaItem(
         input.kind,
         input.mimeType,
       );
-      const item: JournalItem = {
-        id: createId(input.kind),
-        kind: input.comment?.trim() ? "media-with-comment" : "media",
-        order: ref.items.length + created.length,
-        createdAt: now,
-        updatedAt: now,
-        title: input.title?.trim() || undefined,
-        comment: input.comment?.trim() || undefined,
-        media: {
-          fileName: copiedFileName,
-          kind: input.kind,
-          mimeType: input.mimeType,
-        },
-      };
-      created.push(item);
-      ref.items.push(item);
+      mediaFiles.push({
+        fileName: copiedFileName,
+        kind: input.kind,
+        mimeType: input.mimeType,
+      });
     }
+
+    const item: JournalItem = {
+      id: createId(input.kind),
+      kind: input.comment?.trim() ? "media-with-comment" : "media",
+      order: ref.items.length,
+      createdAt: now,
+      updatedAt: now,
+      title: input.title?.trim() || undefined,
+      comment: input.comment?.trim() || undefined,
+      mediaFiles,
+    };
+
+    created.push(item);
+    ref.items.push(item);
+  } else if (input.sourceUris && input.sourceUris.length === 1) {
+    // Single source URI provided in the array — treat like sourceUri.
+    const src = input.sourceUris[0];
+    const copiedFileName = await copyMediaIntoEventFolder(
+      profileName,
+      eventId,
+      src,
+      input.kind,
+      input.mimeType,
+    );
+    const item: JournalItem = {
+      id: createId(input.kind),
+      kind: input.comment?.trim() ? "media-with-comment" : "media",
+      order: ref.items.length,
+      createdAt: now,
+      updatedAt: now,
+      title: input.title?.trim() || undefined,
+      comment: input.comment?.trim() || undefined,
+      media: {
+        fileName: copiedFileName,
+        kind: input.kind,
+        mimeType: input.mimeType,
+      },
+    };
+    created.push(item);
+    ref.items.push(item);
   } else if (input.sourceUri) {
     const copiedFileName = await copyMediaIntoEventFolder(
       profileName,
