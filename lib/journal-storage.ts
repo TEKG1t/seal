@@ -145,6 +145,28 @@ export async function createProfile(input: CreateProfileInput) {
   return profile;
 }
 
+async function requireProfile(profileName: string) {
+  await ensureJournalRoot();
+
+  const name = profileName.trim();
+  if (!name) {
+    throw new Error("Profile name is required.");
+  }
+
+  const slug = profileFolderName(name);
+  const profilePath = getProfilePath(slug);
+  const profile = await readJsonFile<JournalProfile | null>(
+    joinPath(profilePath, PROFILE_MANIFEST_NAME),
+    null,
+  );
+
+  if (!profile) {
+    throw new Error(`Profile ${name} was not found.`);
+  }
+
+  return profile;
+}
+
 export async function listProfiles() {
   await ensureJournalRoot();
 
@@ -167,7 +189,7 @@ export async function listProfiles() {
 }
 
 export async function deleteProfile(profileName: string) {
-  const profile = await createProfile({ name: profileName });
+  const profile = await requireProfile(profileName);
   const profilePath = getProfilePath(profile.slug);
   const info = await FileSystem.getInfoAsync(profilePath);
 
@@ -177,7 +199,7 @@ export async function deleteProfile(profileName: string) {
 }
 
 export async function renameProfile(profileName: string, nextName: string) {
-  const profile = await createProfile({ name: profileName });
+  const profile = await requireProfile(profileName);
   const trimmedName = nextName.trim();
 
   if (!trimmedName) {
@@ -241,7 +263,7 @@ export async function renameProfile(profileName: string, nextName: string) {
 }
 
 export async function deleteEvent(profileName: string, eventId: string) {
-  const profile = await createProfile({ name: profileName });
+  const profile = await requireProfile(profileName);
   const eventPath = getEventPath(profile.slug, eventId);
   const info = await FileSystem.getInfoAsync(eventPath);
 
@@ -251,7 +273,7 @@ export async function deleteEvent(profileName: string, eventId: string) {
 }
 
 export async function exportProfile(profileName: string) {
-  const profile = await createProfile({ name: profileName });
+  const profile = await requireProfile(profileName);
   const profilePath = getProfilePath(profile.slug);
 
   // Create ZIP in cache directory
@@ -534,7 +556,7 @@ export async function createEvent(
   profileName: string,
   input: CreateEventInput,
 ) {
-  const profile = await createProfile({ name: profileName });
+  const profile = await requireProfile(profileName);
   const title = input.title.trim();
 
   if (!title) {
@@ -580,7 +602,7 @@ export async function updateEvent(
   eventId: string,
   input: CreateEventInput,
 ) {
-  const profile = await createProfile({ name: profileName });
+  const profile = await requireProfile(profileName);
   const manifest = await readJsonFile<JournalEventDocument | null>(
     getEventManifestPath(profile.slug, eventId),
     null,
@@ -644,7 +666,7 @@ export async function updateEvent(
 }
 
 export async function listEvents(profileName: string) {
-  const profile = await createProfile({ name: profileName });
+  const profile = await requireProfile(profileName);
   const entries = await readDirectorySafe(getProfilePath(profile.slug));
   const events: JournalEvent[] = [];
 
@@ -907,6 +929,16 @@ export async function deleteItem(
     );
   }
 
+  if (item.mediaFiles) {
+    await Promise.all(
+      item.mediaFiles.map((mediaFile) =>
+        deleteFileIfExists(
+          joinPath(getEventPath(profileName, eventId), mediaFile.fileName),
+        ),
+      ),
+    );
+  }
+
   await saveEventManifest(profileName, eventId, manifest);
   return ref.items;
 }
@@ -1048,7 +1080,7 @@ export async function getEventStoragePaths(
   profileName: string,
   eventId: string,
 ) {
-  const profile = await createProfile({ name: profileName });
+  const profile = await requireProfile(profileName);
   const eventPath = getEventPath(profile.slug, eventId);
 
   return {
@@ -1059,7 +1091,7 @@ export async function getEventStoragePaths(
 }
 
 async function readEventManifest(profileName: string, eventId: string) {
-  const profile = await createProfile({ name: profileName });
+  const profile = await requireProfile(profileName);
   const manifest = await readJsonFile<JournalEventDocument | null>(
     getEventManifestPath(profile.slug, eventId),
     null,
@@ -1080,7 +1112,7 @@ async function saveEventManifest(
   eventId: string,
   manifest: JournalEventDocument,
 ) {
-  const profile = await createProfile({ name: profileName });
+  const profile = await requireProfile(profileName);
   const now = isoNow();
   const normalizedItems = manifest.items
     .slice()
@@ -1114,7 +1146,7 @@ async function copyMediaIntoEventFolder(
   kind: MediaKind,
   mimeType?: string,
 ) {
-  const profile = await createProfile({ name: profileName });
+  const profile = await requireProfile(profileName);
   const eventPath = getEventPath(profile.slug, eventId);
   await ensureDirectory(eventPath);
 

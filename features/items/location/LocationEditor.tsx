@@ -1,14 +1,21 @@
 import React from "react";
-import { Pressable, StyleProp, Text, View, ViewStyle } from "react-native";
-import { LocationData } from "../../../lib/journal-storage";
+import {
+  ImageStyle,
+  Pressable,
+  StyleProp,
+  Text,
+  View,
+  ViewStyle,
+} from "react-native";
+import { LocationData } from "../../../features/repo/journal-repo";
 import { LocationPreviewCard } from "./LocationPreviewCard";
 
 type Props = {
   location: LocationData | null;
   onOpenPicker: () => void;
-  previewWrapperStyle?: StyleProp<ViewStyle> | any;
-  previewImageStyle?: StyleProp<ViewStyle> | any;
-  buttonStyle?: StyleProp<ViewStyle> | any;
+  previewWrapperStyle?: StyleProp<ViewStyle>;
+  previewImageStyle?: StyleProp<ImageStyle>;
+  buttonStyle?: StyleProp<ViewStyle>;
   buttonTextColor?: string;
 };
 

@@ -44,3 +44,25 @@ eas build -p android --profile preview
   - The interactive `MapView` requires the native `react-native-maps` module — without rebuilding the native binary the app will throw a TurboModule error (`RNMapsAirModule` not found).
 
 - Recommendation: for development, create a custom dev client (via `eas build` / `expo prebuild && expo run:android`) so you can use `MapView` interactively. If you prefer not to rebuild, keep the static OSM preview-only behavior.
+
+## Migration Plan
+
+This project is being prepared for a feature-sliced, testable architecture while preserving current runtime behaviour.
+
+Goals:
+
+- Introduce a repository/use-case layer that centralises filesystem I/O and side-effects.
+- Move screen workflows into feature hooks/controllers so route files remain presentational.
+- Break large screens into focused components and add tests around storage and workflows.
+
+Migration TODOs (tracked):
+
+- [ ] Add Migration Plan to README (in-progress)
+- [ ] Insert TODO list into README
+- [ ] Extract storage repository layer
+- [ ] Move screen state to feature hook
+- [ ] Split item card into components
+- [ ] Add tests for storage/workflows
+- [ ] Run lint and type checks
+
+Reference: these todos are tracked in the project task list for follow-up and progress updates.

@@ -3,56 +3,57 @@ import { Audio, ResizeMode, Video } from "expo-av";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
-import * as VideoThumbnails from "expo-video-thumbnails";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-    FlatList,
-    Modal,
-    Platform,
-    Pressable,
-    Image as RNImage,
-    SafeAreaView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TextInput,
-    useWindowDimensions,
-    View,
+  FlatList,
+  Modal,
+  Platform,
+  Pressable,
+  Image as RNImage,
+  SafeAreaView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  useWindowDimensions,
+  View,
 } from "react-native";
 import DraggableFlatList from "react-native-draggable-flatlist";
 import ImageZoom from "react-native-image-pan-zoom";
 import {
-    ItemKindSelector,
-    type ItemKind as ItemCreateKind,
+  ItemKindSelector,
+  type ItemKind as ItemCreateKind,
 } from "../../components/item-kind-selector";
 import { LocationPickerModal } from "../../components/location-picker-modal";
+import { IconButton } from "../../components/ui/icon-button";
+import { useEvents } from "../../features/home/useEvents";
+import { useItems } from "../../features/home/useItems";
+import { useProfiles } from "../../features/home/useProfiles";
+import { getItemVideoUri } from "../../features/items/journal-item-utils";
+import { JournalItemCard } from "../../features/items/JournalItemCard";
 import { LocationEditor } from "../../features/items/location/LocationEditor";
-import { LocationPreviewCard } from "../../features/items/location/LocationPreviewCard";
 import {
-    addGroupItem,
-    addLocationItem,
-    addMediaItem,
-    addTextItem,
-    createEvent,
-    createProfile,
-    deleteEvent,
-    deleteItem,
-    deleteProfile,
-    exportProfile,
-    getEventStoragePaths,
-    JournalEvent,
-    JournalItem,
-    JournalProfile,
-    listEvents,
-    listItems,
-    listProfiles,
-    LocationData,
-    moveItem,
-    renameProfile,
-    reorderItems,
-    updateEvent,
-    updateItem,
-} from "../../lib/journal-storage";
+  addGroupItem,
+  addLocationItem,
+  addMediaItem,
+  addTextItem,
+  createEvent,
+  createProfile,
+  deleteEvent,
+  deleteItem,
+  deleteProfile,
+  exportProfile,
+  JournalEvent,
+  JournalItem,
+  JournalProfile,
+  listItems,
+  LocationData,
+  moveItem,
+  renameProfile,
+  reorderItems,
+  updateEvent,
+  updateItem,
+} from "../../features/repo/journal-repo";
 
 type ScreenLevel = "home" | "profile" | "event" | "group";
 
@@ -89,17 +90,12 @@ export default function HomeScreen() {
   const [screen, setScreen] = useState<ScreenLevel>("home");
   const [loading, setLoading] = useState(true);
 
-  const [profiles, setProfiles] = useState<JournalProfile[]>([]);
-  const [events, setEvents] = useState<JournalEvent[]>([]);
-  const [items, setItems] = useState<JournalItem[]>([]);
+  const { profiles, loadProfiles } = useProfiles();
 
   const [selectedProfile, setSelectedProfile] = useState<JournalProfile | null>(
     null,
   );
   const [selectedEvent, setSelectedEvent] = useState<JournalEvent | null>(null);
-  const [selectedEventPath, setSelectedEventPath] = useState<string | null>(
-    null,
-  );
   const [selectedGroupPath, setSelectedGroupPath] = useState<string[]>([]);
   const [selectedGroupTitles, setSelectedGroupTitles] = useState<string[]>([]);
 
@@ -117,9 +113,6 @@ export default function HomeScreen() {
   const [previewVideoTitle, setPreviewVideoTitle] = useState<string | null>(
     null,
   );
-  const [videoThumbnailUris, setVideoThumbnailUris] = useState<
-    Record<string, string>
-  >({});
 
   const [newProfileName, setNewProfileName] = useState("");
   const [profileBeingEdited, setProfileBeingEdited] =
@@ -162,6 +155,15 @@ export default function HomeScreen() {
     null,
   );
 
+  const { events, loadEvents } = useEvents(selectedProfile?.name ?? null);
+
+  const { items, setItems, selectedEventPath, videoThumbnailUris, loadItems } =
+    useItems(
+      selectedProfile?.name ?? null,
+      selectedEvent?.id ?? null,
+      selectedGroupPath,
+    );
+
   const screenLabel = useMemo(() => {
     if (screen === "home") {
       return { title: "Home" };
@@ -188,33 +190,7 @@ export default function HomeScreen() {
     return { title: "Home" };
   }, [screen, selectedEvent, selectedGroupTitles, selectedProfile]);
 
-  const loadProfiles = useCallback(async () => {
-    setProfiles(await listProfiles());
-  }, []);
-
-  const loadEvents = useCallback(async () => {
-    if (!selectedProfile) {
-      setEvents([]);
-      return;
-    }
-
-    setEvents(await listEvents(selectedProfile.name));
-  }, [selectedProfile]);
-
-  const loadItems = useCallback(async () => {
-    if (!selectedProfile || !selectedEvent) {
-      setItems([]);
-      return;
-    }
-
-    const [nextItems, paths] = await Promise.all([
-      listItems(selectedProfile.name, selectedEvent.id, selectedGroupPath),
-      getEventStoragePaths(selectedProfile.name, selectedEvent.id),
-    ]);
-
-    setSelectedEventPath(paths.eventPath);
-    setItems(nextItems);
-  }, [selectedEvent, selectedGroupPath, selectedProfile]);
+  // `loadProfiles` is provided by `useProfiles` hook
 
   useEffect(() => {
     let mounted = true;
@@ -262,7 +238,6 @@ export default function HomeScreen() {
     if (screen === "event") {
       setScreen("profile");
       setSelectedEvent(null);
-      setSelectedEventPath(null);
       setSelectedGroupPath([]);
       setSelectedGroupTitles([]);
       return;
@@ -272,7 +247,6 @@ export default function HomeScreen() {
       setScreen("home");
       setSelectedProfile(null);
       setSelectedEvent(null);
-      setSelectedEventPath(null);
       setSelectedGroupPath([]);
       setSelectedGroupTitles([]);
     }
@@ -352,56 +326,6 @@ export default function HomeScreen() {
       }
     }, 50);
   }, [previewImageUris, previewImageIndex]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const videoUris = Array.from(
-      new Set(
-        items
-          .map((item) => getItemVideoUri(item, selectedEventPath))
-          .filter((uri): uri is string => Boolean(uri)),
-      ),
-    );
-
-    const missingUris = videoUris.filter((uri) => !videoThumbnailUris[uri]);
-
-    if (missingUris.length === 0) {
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    (async () => {
-      const nextThumbnails: Record<string, string> = {};
-
-      for (const uri of missingUris) {
-        try {
-          const result = await VideoThumbnails.getThumbnailAsync(uri, {
-            time: 0,
-          });
-          nextThumbnails[uri] = result.uri;
-        } catch {
-          // keep a placeholder when thumbnail generation fails
-        }
-      }
-
-      if (cancelled) {
-        return;
-      }
-
-      if (Object.keys(nextThumbnails).length > 0) {
-        setVideoThumbnailUris((current) => ({
-          ...current,
-          ...nextThumbnails,
-        }));
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [items, selectedEventPath, videoThumbnailUris]);
 
   useEffect(() => {
     if (!previewVideoUri) {
@@ -589,7 +513,6 @@ export default function HomeScreen() {
     await loadProfiles();
     setSelectedProfile(null);
     setSelectedEvent(null);
-    setSelectedEventPath(null);
     closeDeleteModal();
   };
 
@@ -617,7 +540,6 @@ export default function HomeScreen() {
     await deleteEvent(selectedProfile.name, eventToDelete.id);
     await loadEvents();
     setSelectedEvent(null);
-    setSelectedEventPath(null);
     setScreen("profile");
     closeDeleteModal();
   };
@@ -945,57 +867,30 @@ export default function HomeScreen() {
                     </Pressable>
 
                     <View style={styles.profileActions}>
-                      <Pressable
+                      <IconButton
                         onPress={() => handleExportProfile(item)}
-                        style={({ pressed }) => [
-                          styles.trashButton,
-                          {
-                            borderColor: palette.border,
-                            backgroundColor: palette.cardMuted,
-                          },
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <MaterialIcons
-                          name="archive"
-                          size={20}
-                          color={palette.text}
-                        />
-                      </Pressable>
-                      <Pressable
+                        iconName="archive"
+                        size={20}
+                        color={palette.text}
+                        borderColor={palette.border}
+                        backgroundColor={palette.cardMuted}
+                      />
+                      <IconButton
                         onPress={() => startEditProfile(item)}
-                        style={({ pressed }) => [
-                          styles.trashButton,
-                          {
-                            borderColor: palette.border,
-                            backgroundColor: palette.cardMuted,
-                          },
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <MaterialIcons
-                          name="edit"
-                          size={20}
-                          color={palette.accent}
-                        />
-                      </Pressable>
-                      <Pressable
+                        iconName="edit"
+                        size={20}
+                        color={palette.accent}
+                        borderColor={palette.border}
+                        backgroundColor={palette.cardMuted}
+                      />
+                      <IconButton
                         onPress={() => startDeleteProfile(item)}
-                        style={({ pressed }) => [
-                          styles.trashButton,
-                          {
-                            borderColor: palette.border,
-                            backgroundColor: palette.cardMuted,
-                          },
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <MaterialIcons
-                          name="delete-outline"
-                          size={22}
-                          color={palette.danger}
-                        />
-                      </Pressable>
+                        iconName="delete-outline"
+                        size={22}
+                        color={palette.danger}
+                        borderColor={palette.border}
+                        backgroundColor={palette.cardMuted}
+                      />
                     </View>
                   </View>
                 )}
@@ -1051,40 +946,22 @@ export default function HomeScreen() {
                     </Pressable>
 
                     <View style={styles.profileActions}>
-                      <Pressable
+                      <IconButton
                         onPress={() => startEditEvent(item)}
-                        style={({ pressed }) => [
-                          styles.trashButton,
-                          {
-                            borderColor: palette.border,
-                            backgroundColor: palette.cardMuted,
-                          },
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <MaterialIcons
-                          name="edit"
-                          size={20}
-                          color={palette.accent}
-                        />
-                      </Pressable>
-                      <Pressable
+                        iconName="edit"
+                        size={20}
+                        color={palette.accent}
+                        borderColor={palette.border}
+                        backgroundColor={palette.cardMuted}
+                      />
+                      <IconButton
                         onPress={() => startDeleteEvent(item)}
-                        style={({ pressed }) => [
-                          styles.trashButton,
-                          {
-                            borderColor: palette.border,
-                            backgroundColor: palette.cardMuted,
-                          },
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <MaterialIcons
-                          name="delete-outline"
-                          size={22}
-                          color={palette.danger}
-                        />
-                      </Pressable>
+                        iconName="delete-outline"
+                        size={22}
+                        color={palette.danger}
+                        borderColor={palette.border}
+                        backgroundColor={palette.cardMuted}
+                      />
                     </View>
                   </View>
                 )}
@@ -1122,326 +999,33 @@ export default function HomeScreen() {
                     normalized.map((entry) => entry.id),
                   ).catch(() => undefined);
                 }}
-                renderItem={({ item, drag, isActive }) =>
-                  (() => {
-                    const imageUris = getItemImageUris(item, selectedEventPath);
-                    const visibleImageUris = imageUris.slice(0, 4);
-                    const extraImageCount =
-                      imageUris.length - visibleImageUris.length;
+                renderItem={({ item, drag, isActive }) => {
+                  const videoUri = getItemVideoUri(item, selectedEventPath);
 
-                    return (
-                      <View
-                        style={[
-                          styles.itemCard,
-                          {
-                            backgroundColor: palette.card,
-                            borderColor: palette.border,
-                            opacity: isActive ? 0.9 : 1,
-                          },
-                        ]}
-                      >
-                        <Pressable
-                          onLongPress={drag}
-                          delayLongPress={120}
-                          style={styles.itemTopRow}
-                        >
-                          <Text
-                            style={[styles.itemTitle, { color: palette.text }]}
-                          >
-                            {itemCardLabel(item)}
-                          </Text>
-                          <View style={styles.profileActions}>
-                            <Pressable
-                              onPress={() => startEditItem(item)}
-                              style={({ pressed }) => [
-                                styles.trashButton,
-                                {
-                                  borderColor: palette.border,
-                                  backgroundColor: palette.cardMuted,
-                                },
-                                pressed && styles.pressed,
-                              ]}
-                            >
-                              <MaterialIcons
-                                name="edit"
-                                size={20}
-                                color={palette.accent}
-                              />
-                            </Pressable>
-                            <Pressable
-                              onPress={() => openMoveModalForItem(item)}
-                              style={({ pressed }) => [
-                                styles.trashButton,
-                                {
-                                  borderColor: palette.border,
-                                  backgroundColor: palette.cardMuted,
-                                },
-                                pressed && styles.pressed,
-                              ]}
-                            >
-                              <MaterialIcons
-                                name="drive-file-move"
-                                size={20}
-                                color={palette.text}
-                              />
-                            </Pressable>
-                            <Pressable
-                              onPress={() => startDeleteItem(item)}
-                              style={({ pressed }) => [
-                                styles.trashButton,
-                                {
-                                  borderColor: palette.border,
-                                  backgroundColor: palette.cardMuted,
-                                },
-                                pressed && styles.pressed,
-                              ]}
-                            >
-                              <MaterialIcons
-                                name="delete-outline"
-                                size={18}
-                                color={palette.danger}
-                              />
-                            </Pressable>
-                          </View>
-                        </Pressable>
-
-                        {item.text ? (
-                          <Text
-                            style={[styles.itemBody, { color: palette.text }]}
-                          >
-                            {item.text}
-                          </Text>
-                        ) : null}
-                        {item.comment ? (
-                          <Text
-                            style={[
-                              styles.itemComment,
-                              { color: palette.textMuted },
-                            ]}
-                          >
-                            {item.comment}
-                          </Text>
-                        ) : null}
-
-                        {item.kind === "group" ? (
-                          <Pressable
-                            onPress={() => openGroup(item)}
-                            style={({ pressed }) => [
-                              styles.groupCard,
-                              {
-                                borderColor: palette.border,
-                                backgroundColor: palette.cardMuted,
-                              },
-                              pressed && styles.pressed,
-                            ]}
-                          >
-                            <MaterialIcons
-                              name="folder"
-                              size={34}
-                              color={palette.accent}
-                            />
-                            <View style={{ flex: 1 }}>
-                              <Text
-                                style={{
-                                  color: palette.text,
-                                  fontWeight: "700",
-                                }}
-                              >
-                                {item.title?.trim() || "Group"}
-                              </Text>
-                              <Text
-                                style={{
-                                  color: palette.textMuted,
-                                  marginTop: 2,
-                                }}
-                              >
-                                {item.groupItems?.length ?? 0} items
-                              </Text>
-                              {item.comment ? (
-                                <Text
-                                  style={{
-                                    color: palette.textMuted,
-                                    marginTop: 4,
-                                    fontStyle: "italic",
-                                  }}
-                                >
-                                  {item.comment}
-                                </Text>
-                              ) : null}
-                            </View>
-                            <MaterialIcons
-                              name="chevron-right"
-                              size={22}
-                              color={palette.textMuted}
-                            />
-                          </Pressable>
-                        ) : imageUris.length > 0 ? (
-                          <View
-                            style={[
-                              styles.itemImageGrid,
-                              imageUris.length === 1
-                                ? styles.itemImageGridSingle
-                                : styles.itemImageGridMulti,
-                            ]}
-                          >
-                            {imageUris
-                              .slice(0, 4)
-                              .reduce<string[][]>((rows, uri, index) => {
-                                const rowIndex = Math.floor(index / 2);
-                                if (!rows[rowIndex]) rows[rowIndex] = [];
-                                rows[rowIndex].push(uri);
-                                return rows;
-                              }, [])
-                              .map((row, rowIndex) => (
-                                <View
-                                  key={`row-${rowIndex}`}
-                                  style={styles.itemImageRow}
-                                >
-                                  {row.map((uri, cellIndex) => {
-                                    const imageIndex = rowIndex * 2 + cellIndex;
-                                    const isLastVisible = imageIndex === 3;
-                                    return (
-                                      <Pressable
-                                        key={`${uri}-${imageIndex}`}
-                                        onPress={() =>
-                                          openPreviewImages(
-                                            imageUris,
-                                            imageIndex,
-                                          )
-                                        }
-                                        style={({ pressed }) => [
-                                          styles.itemImageCell,
-                                          imageUris.length === 1
-                                            ? styles.itemImageCellSingle
-                                            : styles.itemImageCellMulti,
-                                          pressed && styles.pressed,
-                                        ]}
-                                      >
-                                        <Image
-                                          source={{ uri }}
-                                          style={styles.itemImage}
-                                          contentFit="cover"
-                                        />
-                                        {isLastVisible &&
-                                        extraImageCount > 0 ? (
-                                          <View style={styles.itemImageOverlay}>
-                                            <Text
-                                              style={
-                                                styles.itemImageOverlayText
-                                              }
-                                            >
-                                              +{extraImageCount}
-                                            </Text>
-                                          </View>
-                                        ) : null}
-                                      </Pressable>
-                                    );
-                                  })}
-                                </View>
-                              ))}
-                          </View>
-                        ) : item.location ? (
-                          <Pressable
-                            onPress={() => {
-                              setItemBeingEdited(item);
-                              setSelectedLocation(item.location ?? null);
-                              setShowLocationPicker(true);
-                            }}
-                            style={({ pressed }) => [
-                              styles.itemImageCell,
-                              styles.itemImageCellSingle,
-                              pressed && styles.pressed,
-                            ]}
-                          >
-                            <LocationPreviewCard
-                              location={item.location}
-                              style={styles.itemImage}
-                              contentFit="cover"
-                            />
-                          </Pressable>
-                        ) : null}
-
-                        {item.media?.kind === "video" ? (
-                          <Pressable
-                            onPress={() => {
-                              const videoUri = getItemVideoUri(
-                                item,
-                                selectedEventPath,
-                              );
-                              if (videoUri) {
-                                openPreviewVideo(videoUri, itemCardLabel(item));
-                              }
-                            }}
-                            style={({ pressed }) => [
-                              styles.videoPreview,
-                              {
-                                borderColor: palette.border,
-                                backgroundColor: palette.cardMuted,
-                              },
-                              pressed && styles.pressed,
-                            ]}
-                          >
-                            <View style={styles.videoPreviewThumbWrap}>
-                              {(() => {
-                                const videoUri = getItemVideoUri(
-                                  item,
-                                  selectedEventPath,
-                                );
-                                const thumbnailUri = videoUri
-                                  ? videoThumbnailUris[videoUri]
-                                  : undefined;
-
-                                return thumbnailUri ? (
-                                  <Image
-                                    source={{ uri: thumbnailUri }}
-                                    style={styles.videoPreviewThumb}
-                                    contentFit="cover"
-                                  />
-                                ) : (
-                                  <View
-                                    style={[
-                                      styles.videoPreviewThumb,
-                                      styles.videoPreviewThumbFallback,
-                                    ]}
-                                  >
-                                    <MaterialIcons
-                                      name="movie"
-                                      size={36}
-                                      color={palette.textMuted}
-                                    />
-                                  </View>
-                                );
-                              })()}
-                              <View style={styles.videoPlayOverlay}>
-                                <MaterialIcons
-                                  name="play-circle-filled"
-                                  size={48}
-                                  color="#ffffff"
-                                />
-                              </View>
-                            </View>
-                            <View style={styles.videoBadgeRow}>
-                              <MaterialIcons
-                                name="videocam"
-                                size={18}
-                                color={palette.textMuted}
-                              />
-                              <Text
-                                style={[
-                                  styles.videoBadgeText,
-                                  { color: palette.textMuted },
-                                ]}
-                                numberOfLines={1}
-                              >
-                                {item.media.fileName}
-                              </Text>
-                            </View>
-                          </Pressable>
-                        ) : null}
-                      </View>
-                    );
-                  })()
-                }
+                  return (
+                    <JournalItemCard
+                      item={item}
+                      selectedEventPath={selectedEventPath}
+                      videoThumbnailUri={
+                        videoUri ? videoThumbnailUris[videoUri] : undefined
+                      }
+                      isActive={isActive}
+                      palette={palette}
+                      onLongPress={drag}
+                      onEdit={startEditItem}
+                      onMove={openMoveModalForItem}
+                      onDelete={startDeleteItem}
+                      onOpenGroup={openGroup}
+                      onOpenPreviewImages={openPreviewImages}
+                      onOpenPreviewVideo={openPreviewVideo}
+                      onEditLocation={(currentItem) => {
+                        setItemBeingEdited(currentItem);
+                        setSelectedLocation(currentItem.location ?? null);
+                        setShowLocationPicker(true);
+                      }}
+                    />
+                  );
+                }}
                 ListEmptyComponent={
                   <View style={styles.emptyWrap}>
                     <Text
@@ -1477,330 +1061,33 @@ export default function HomeScreen() {
                     selectedGroupPath,
                   ).catch(() => undefined);
                 }}
-                renderItem={({ item, drag, isActive }) => (
-                  <View
-                    style={[
-                      styles.itemCard,
-                      {
-                        backgroundColor: palette.card,
-                        borderColor: palette.border,
-                        opacity: isActive ? 0.9 : 1,
-                      },
-                    ]}
-                  >
-                    <Pressable
+                renderItem={({ item, drag, isActive }) => {
+                  const videoUri = getItemVideoUri(item, selectedEventPath);
+
+                  return (
+                    <JournalItemCard
+                      item={item}
+                      selectedEventPath={selectedEventPath}
+                      videoThumbnailUri={
+                        videoUri ? videoThumbnailUris[videoUri] : undefined
+                      }
+                      isActive={isActive}
+                      palette={palette}
                       onLongPress={drag}
-                      delayLongPress={120}
-                      style={styles.itemTopRow}
-                    >
-                      <Text style={[styles.itemTitle, { color: palette.text }]}>
-                        {itemCardLabel(item)}
-                      </Text>
-                      <View style={styles.profileActions}>
-                        <Pressable
-                          onPress={() => startEditItem(item)}
-                          style={({ pressed }) => [
-                            styles.trashButton,
-                            {
-                              borderColor: palette.border,
-                              backgroundColor: palette.cardMuted,
-                            },
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <MaterialIcons
-                            name="edit"
-                            size={20}
-                            color={palette.accent}
-                          />
-                        </Pressable>
-                        <Pressable
-                          onPress={() => openMoveModalForItem(item)}
-                          style={({ pressed }) => [
-                            styles.trashButton,
-                            {
-                              borderColor: palette.border,
-                              backgroundColor: palette.cardMuted,
-                            },
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <MaterialIcons
-                            name="drive-file-move"
-                            size={20}
-                            color={palette.text}
-                          />
-                        </Pressable>
-                        <Pressable
-                          onPress={() => startDeleteItem(item)}
-                          style={({ pressed }) => [
-                            styles.trashButton,
-                            {
-                              borderColor: palette.border,
-                              backgroundColor: palette.cardMuted,
-                            },
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <MaterialIcons
-                            name="delete-outline"
-                            size={18}
-                            color={palette.danger}
-                          />
-                        </Pressable>
-                      </View>
-                    </Pressable>
-
-                    {item.kind === "group" ? (
-                      <Pressable
-                        onPress={() => openGroup(item)}
-                        style={({ pressed }) => [
-                          {
-                            marginTop: 10,
-                            borderWidth: 1,
-                            borderRadius: 16,
-                            padding: 14,
-                            gap: 12,
-                            flexDirection: "row",
-                            alignItems: "center",
-                            borderColor: palette.border,
-                            backgroundColor: palette.cardMuted,
-                          },
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <MaterialIcons
-                          name="folder"
-                          size={34}
-                          color={palette.accent}
-                        />
-                        <View style={{ flex: 1 }}>
-                          <Text
-                            style={{ color: palette.text, fontWeight: "700" }}
-                          >
-                            {item.title?.trim() || "Group"}
-                          </Text>
-                          <Text
-                            style={{ color: palette.textMuted, marginTop: 2 }}
-                          >
-                            {item.groupItems?.length ?? 0} items
-                          </Text>
-                          {item.comment ? (
-                            <Text
-                              style={{
-                                color: palette.textMuted,
-                                marginTop: 4,
-                                fontStyle: "italic",
-                              }}
-                            >
-                              {item.comment}
-                            </Text>
-                          ) : null}
-                        </View>
-                        <MaterialIcons
-                          name="chevron-right"
-                          size={22}
-                          color={palette.textMuted}
-                        />
-                      </Pressable>
-                    ) : (
-                      <>
-                        {item.text ? (
-                          <Text
-                            style={[styles.itemBody, { color: palette.text }]}
-                          >
-                            {item.text}
-                          </Text>
-                        ) : null}
-                        {item.comment ? (
-                          <Text
-                            style={[
-                              styles.itemComment,
-                              { color: palette.textMuted },
-                            ]}
-                          >
-                            {item.comment}
-                          </Text>
-                        ) : null}
-
-                        {(() => {
-                          const imageUris = getItemImageUris(
-                            item,
-                            selectedEventPath,
-                          );
-                          const visibleImageUris = imageUris.slice(0, 4);
-                          const extraImageCount =
-                            imageUris.length - visibleImageUris.length;
-
-                          return imageUris.length > 0 ? (
-                            <View
-                              style={[
-                                styles.itemImageGrid,
-                                imageUris.length === 1
-                                  ? styles.itemImageGridSingle
-                                  : styles.itemImageGridMulti,
-                              ]}
-                            >
-                              {imageUris
-                                .slice(0, 4)
-                                .reduce<string[][]>((rows, uri, index) => {
-                                  const rowIndex = Math.floor(index / 2);
-                                  if (!rows[rowIndex]) rows[rowIndex] = [];
-                                  rows[rowIndex].push(uri);
-                                  return rows;
-                                }, [])
-                                .map((row, rowIndex) => (
-                                  <View
-                                    key={`row-${rowIndex}`}
-                                    style={styles.itemImageRow}
-                                  >
-                                    {row.map((uri, cellIndex) => {
-                                      const imageIndex =
-                                        rowIndex * 2 + cellIndex;
-                                      const isLastVisible = imageIndex === 3;
-                                      return (
-                                        <Pressable
-                                          key={`${uri}-${imageIndex}`}
-                                          onPress={() =>
-                                            openPreviewImages(
-                                              imageUris,
-                                              imageIndex,
-                                            )
-                                          }
-                                          style={({ pressed }) => [
-                                            styles.itemImageCell,
-                                            imageUris.length === 1
-                                              ? styles.itemImageCellSingle
-                                              : styles.itemImageCellMulti,
-                                            pressed && styles.pressed,
-                                          ]}
-                                        >
-                                          <Image
-                                            source={{ uri }}
-                                            style={styles.itemImage}
-                                            contentFit="cover"
-                                          />
-                                          {isLastVisible &&
-                                          extraImageCount > 0 ? (
-                                            <View
-                                              style={styles.itemImageOverlay}
-                                            >
-                                              <Text
-                                                style={
-                                                  styles.itemImageOverlayText
-                                                }
-                                              >
-                                                +{extraImageCount}
-                                              </Text>
-                                            </View>
-                                          ) : null}
-                                        </Pressable>
-                                      );
-                                    })}
-                                  </View>
-                                ))}
-                            </View>
-                          ) : item.location ? (
-                            <Pressable
-                              onPress={() => {
-                                setItemBeingEdited(item);
-                                setSelectedLocation(item.location ?? null);
-                                setShowLocationPicker(true);
-                              }}
-                              style={({ pressed }) => [
-                                styles.itemImageCell,
-                                styles.itemImageCellSingle,
-                                pressed && styles.pressed,
-                              ]}
-                            >
-                              <LocationPreviewCard
-                                location={item.location}
-                                style={styles.itemImage}
-                                contentFit="cover"
-                              />
-                            </Pressable>
-                          ) : null;
-                        })()}
-
-                        {item.media?.kind === "video" ? (
-                          <Pressable
-                            onPress={() => {
-                              const videoUri = getItemVideoUri(
-                                item,
-                                selectedEventPath,
-                              );
-                              if (videoUri)
-                                openPreviewVideo(videoUri, itemCardLabel(item));
-                            }}
-                            style={({ pressed }) => [
-                              styles.videoPreview,
-                              {
-                                borderColor: palette.border,
-                                backgroundColor: palette.cardMuted,
-                              },
-                              pressed && styles.pressed,
-                            ]}
-                          >
-                            <View style={styles.videoPreviewThumbWrap}>
-                              {(() => {
-                                const videoUri = getItemVideoUri(
-                                  item,
-                                  selectedEventPath,
-                                );
-                                const thumbnailUri = videoUri
-                                  ? videoThumbnailUris[videoUri]
-                                  : undefined;
-                                return thumbnailUri ? (
-                                  <Image
-                                    source={{ uri: thumbnailUri }}
-                                    style={styles.videoPreviewThumb}
-                                    contentFit="cover"
-                                  />
-                                ) : (
-                                  <View
-                                    style={[
-                                      styles.videoPreviewThumb,
-                                      styles.videoPreviewThumbFallback,
-                                    ]}
-                                  >
-                                    <MaterialIcons
-                                      name="movie"
-                                      size={36}
-                                      color={palette.textMuted}
-                                    />
-                                  </View>
-                                );
-                              })()}
-                              <View style={styles.videoPlayOverlay}>
-                                <MaterialIcons
-                                  name="play-circle-filled"
-                                  size={48}
-                                  color="#ffffff"
-                                />
-                              </View>
-                            </View>
-                            <View style={styles.videoBadgeRow}>
-                              <MaterialIcons
-                                name="videocam"
-                                size={18}
-                                color={palette.textMuted}
-                              />
-                              <Text
-                                style={[
-                                  styles.videoBadgeText,
-                                  { color: palette.textMuted },
-                                ]}
-                                numberOfLines={1}
-                              >
-                                {item.media?.fileName}
-                              </Text>
-                            </View>
-                          </Pressable>
-                        ) : null}
-                      </>
-                    )}
-                  </View>
-                )}
+                      onEdit={startEditItem}
+                      onMove={openMoveModalForItem}
+                      onDelete={startDeleteItem}
+                      onOpenGroup={openGroup}
+                      onOpenPreviewImages={openPreviewImages}
+                      onOpenPreviewVideo={openPreviewVideo}
+                      onEditLocation={(currentItem) => {
+                        setItemBeingEdited(currentItem);
+                        setSelectedLocation(currentItem.location ?? null);
+                        setShowLocationPicker(true);
+                      }}
+                    />
+                  );
+                }}
                 ListEmptyComponent={
                   <View style={styles.emptyWrap}>
                     <Text
@@ -3055,33 +2342,3 @@ const styles = StyleSheet.create({
   },
   pressed: { opacity: 0.82, transform: [{ scale: 0.985 }] },
 });
-
-function getItemImageUris(item: JournalItem, selectedEventPath: string | null) {
-  if (!selectedEventPath) {
-    return [];
-  }
-
-  if (item.mediaFiles?.length) {
-    return item.mediaFiles
-      .filter((media) => media.kind === "image")
-      .map((media) => `${selectedEventPath}/${media.fileName}`);
-  }
-
-  if (item.media?.kind === "image") {
-    return [`${selectedEventPath}/${item.media.fileName}`];
-  }
-
-  return [];
-}
-
-function getItemVideoUri(item: JournalItem, selectedEventPath: string | null) {
-  if (!selectedEventPath) {
-    return null;
-  }
-
-  if (item.media?.kind === "video") {
-    return `${selectedEventPath}/${item.media.fileName}`;
-  }
-
-  return null;
-}

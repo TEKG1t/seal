@@ -1,13 +1,13 @@
 import { Image } from "expo-image";
 import React from "react";
-import { ViewStyle } from "react-native";
-import { LocationData } from "../../../lib/journal-storage";
+import { ImageStyle, StyleProp } from "react-native";
+import { LocationData } from "../../../features/repo/journal-repo";
 import { getLocationPreviewUri } from "../../../lib/location-preview";
 
 type Props = {
   location: LocationData | null;
-  style?: ViewStyle | any;
-  contentFit?: "cover" | "contain" | "cover";
+  style?: StyleProp<ImageStyle>;
+  contentFit?: "cover" | "contain";
 };
 
 export function LocationPreviewCard({
