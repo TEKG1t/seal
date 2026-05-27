@@ -915,6 +915,8 @@ export async function deleteItem(
   const item = ref.items.find((entry) => entry.id === itemId);
   if (!item) return ref.items;
 
+  await deleteItemAssetsRecursively(item, getEventPath(profileName, eventId));
+
   ref.items.splice(
     ref.items.findIndex((e) => e.id === itemId),
     1,
@@ -943,6 +945,29 @@ export async function deleteItem(
   return ref.items;
 }
 
+async function deleteItemAssetsRecursively(
+  item: JournalItem,
+  eventPath: string,
+) {
+  if (item.media) {
+    await deleteFileIfExists(joinPath(eventPath, item.media.fileName));
+  }
+
+  if (item.mediaFiles) {
+    await Promise.all(
+      item.mediaFiles.map((mediaFile) =>
+        deleteFileIfExists(joinPath(eventPath, mediaFile.fileName)),
+      ),
+    );
+  }
+
+  if (item.groupItems?.length) {
+    for (const childItem of item.groupItems) {
+      await deleteItemAssetsRecursively(childItem, eventPath);
+    }
+  }
+}
+
 export async function updateItem(
   profileName: string,
   eventId: string,
@@ -963,7 +988,7 @@ export async function updateItem(
   const nextText = input.text?.trim() || item.text || "";
   const nextComment = input.comment?.trim() || undefined;
 
-  ref.items = ref.items.map((entry) => {
+  const updatedItems: JournalItem[] = ref.items.map((entry) => {
     if (entry.id !== itemId) return entry;
 
     if (entry.kind === "text") {
@@ -986,6 +1011,15 @@ export async function updateItem(
       };
     }
 
+    if (entry.kind === "group") {
+      return {
+        ...entry,
+        title: nextTitle,
+        comment: nextComment,
+        updatedAt: now,
+      };
+    }
+
     // media or media-with-comment
     return {
       ...entry,
@@ -995,6 +1029,8 @@ export async function updateItem(
       updatedAt: now,
     };
   });
+
+  ref.items.splice(0, ref.items.length, ...updatedItems);
 
   await saveEventManifest(profileName, eventId, manifest);
   return ref.items;
@@ -1068,7 +1104,18 @@ export async function moveItem(
 
   const idx = fromRef.items.findIndex((it) => it.id === itemId);
   if (idx === -1) throw new Error("Item not found in source container.");
-  const [item] = fromRef.items.splice(idx, 1);
+
+  const item = fromRef.items[idx];
+  if (
+    item.kind === "group" &&
+    toPath &&
+    isPathPrefix(toPath, [...(fromPath ?? []), item.id])
+  ) {
+    throw new Error("Cannot move a group into one of its descendants.");
+  }
+
+  fromRef.items.splice(idx, 1);
+
   item.order = toRef.items.length;
   toRef.items.push(item);
 
@@ -1196,6 +1243,14 @@ async function deleteFileIfExists(path: string) {
 async function pathExists(path: string) {
   const info = await FileSystem.getInfoAsync(path);
   return info.exists;
+}
+
+function isPathPrefix(path: string[], prefix: string[]) {
+  if (prefix.length > path.length) return false;
+  for (let index = 0; index < prefix.length; index += 1) {
+    if (path[index] !== prefix[index]) return false;
+  }
+  return true;
 }
 
 async function readJsonFile<T>(path: string, fallback: T) {

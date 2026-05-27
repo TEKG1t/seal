@@ -1574,7 +1574,13 @@ export default function HomeScreen() {
             </Text>
             <View style={{ maxHeight: 320, marginTop: 8 }}>
               {moveTargets.map((t, idx) => {
-                const disabled = arraysEqual(t.path, selectedGroupPath || []);
+                const disabled =
+                  arraysEqual(t.path, selectedGroupPath || []) ||
+                  (movingItem?.kind === "group" &&
+                    isPathPrefix(t.path, [
+                      ...selectedGroupPath,
+                      movingItem.id,
+                    ]));
                 return (
                   <Pressable
                     key={`move-target-${idx}`}
@@ -1953,6 +1959,14 @@ function arraysEqual(
   if (!a || !b) return false;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function isPathPrefix(path: string[], prefix: string[]) {
+  if (prefix.length > path.length) return false;
+  for (let index = 0; index < prefix.length; index += 1) {
+    if (path[index] !== prefix[index]) return false;
+  }
   return true;
 }
 

@@ -198,6 +198,9 @@ export function JournalItemCard({
                   {row.map((uri, cellIndex) => {
                     const imageIndex = rowIndex * 2 + cellIndex;
                     const isLastVisible = imageIndex === 3;
+                    const isSingleCellRow = row.length === 1;
+                    const cellAspectRatio =
+                      imageUris.length === 1 ? 1.6 : isSingleCellRow ? 2 : 1;
                     return (
                       <Pressable
                         key={`${uri}-${imageIndex}`}
@@ -206,7 +209,7 @@ export function JournalItemCard({
                         }
                         style={{
                           flex: 1,
-                          aspectRatio: imageUris.length === 1 ? 1.6 : 1,
+                          aspectRatio: cellAspectRatio,
                         }}
                       >
                         <Image
