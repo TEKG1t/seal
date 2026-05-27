@@ -37,6 +37,7 @@ import {
   addLocationItem,
   addMediaItem,
   addTextItem,
+  countJournalItems,
   createEvent,
   createProfile,
   deleteEvent,
@@ -590,7 +591,7 @@ export default function HomeScreen() {
             const label = g.title?.trim() || "Group";
             const nextBreadcrumbs = [...breadcrumbs, label];
             targets.push({
-              title: `${label} (${g.groupItems?.length ?? 0})`,
+              title: `${label} (${countJournalItems(g.groupItems ?? [])})`,
               pathDisplay: nextBreadcrumbs.join("/"),
               path: [...path, g.id],
             });
@@ -634,7 +635,12 @@ export default function HomeScreen() {
   const submitDeleteItem = async () => {
     if (!itemToDelete || !selectedProfile || !selectedEvent) return;
 
-    await deleteItem(selectedProfile.name, selectedEvent.id, itemToDelete.id);
+    await deleteItem(
+      selectedProfile.name,
+      selectedEvent.id,
+      itemToDelete.id,
+      selectedGroupPath,
+    );
     await loadItems();
     closeDeleteModal();
   };
@@ -1273,8 +1279,11 @@ export default function HomeScreen() {
                   onChangeText={setNewItemComment}
                   placeholder="Optional comment"
                   placeholderTextColor={palette.textMuted}
+                  multiline
+                  numberOfLines={4}
                   style={[
                     styles.input,
+                    styles.multilineInput,
                     {
                       borderColor: palette.border,
                       color: palette.text,
@@ -1348,8 +1357,11 @@ export default function HomeScreen() {
                   onChangeText={setNewItemComment}
                   placeholder="Optional comment"
                   placeholderTextColor={palette.textMuted}
+                  multiline
+                  numberOfLines={4}
                   style={[
                     styles.input,
+                    styles.multilineInput,
                     {
                       borderColor: palette.border,
                       color: palette.text,
@@ -1424,8 +1436,11 @@ export default function HomeScreen() {
                   onChangeText={setNewItemComment}
                   placeholder="Optional comment"
                   placeholderTextColor={palette.textMuted}
+                  multiline
+                  numberOfLines={4}
                   style={[
                     styles.input,
+                    styles.multilineInput,
                     {
                       borderColor: palette.border,
                       color: palette.text,
@@ -1499,8 +1514,11 @@ export default function HomeScreen() {
                   onChangeText={setNewItemComment}
                   placeholder="Optional comment"
                   placeholderTextColor={palette.textMuted}
+                  multiline
+                  numberOfLines={4}
                   style={[
                     styles.input,
+                    styles.multilineInput,
                     {
                       borderColor: palette.border,
                       color: palette.text,

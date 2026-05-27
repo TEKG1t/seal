@@ -896,7 +896,7 @@ export async function reorderItems(
   );
 
   manifest.updatedAt = now;
-  manifest.itemCount = manifest.items.length;
+  manifest.itemCount = countJournalItems(manifest.items);
 
   await saveEventManifest(profileName, eventId, manifest);
   return ref.items;
@@ -1175,7 +1175,7 @@ async function saveEventManifest(
     profileName: profile.name,
     id: eventId,
     folderName: eventId,
-    itemCount: normalizedItems.length,
+    itemCount: countJournalItems(normalizedItems),
     updatedAt: now,
     items: normalizedItems,
   };
@@ -1290,8 +1290,22 @@ function eventSummary(manifest: JournalEventDocument): JournalEvent {
     folderName: manifest.folderName,
     createdAt: manifest.createdAt,
     updatedAt: manifest.updatedAt,
-    itemCount: manifest.items.length,
+    itemCount: countJournalItems(manifest.items),
   };
+}
+
+export function countJournalItems(items: JournalItem[]) {
+  let total = 0;
+
+  for (const item of items) {
+    total += 1;
+
+    if (item.kind === "group" && item.groupItems?.length) {
+      total += countJournalItems(item.groupItems);
+    }
+  }
+
+  return total;
 }
 
 function joinPath(...parts: string[]) {

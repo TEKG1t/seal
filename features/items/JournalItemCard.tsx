@@ -3,7 +3,7 @@ import { Image } from "expo-image";
 import { Pressable, Text, View } from "react-native";
 
 import { IconButton } from "../../components/ui/icon-button";
-import { type JournalItem } from "../repo/journal-repo";
+import { countJournalItems, type JournalItem } from "../repo/journal-repo";
 import {
     getItemImageUris,
     getItemVideoUri,
@@ -145,7 +145,7 @@ export function JournalItemCard({
               {item.title?.trim() || "Group"}
             </Text>
             <Text style={{ color: palette.textMuted, marginTop: 2 }}>
-              {item.groupItems?.length ?? 0} items
+              {countJournalItems(item.groupItems ?? [])} items
             </Text>
             {item.comment ? (
               <Text
